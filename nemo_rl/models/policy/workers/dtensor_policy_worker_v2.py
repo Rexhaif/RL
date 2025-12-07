@@ -1663,13 +1663,42 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
 
     @torch.no_grad()
     def prepare_refit_info(self) -> Optional[dict[str, Any]]:
-        """Prepare state dict metadata for weight refitting and IPC streaming."""
-        state_dict_info = {}
-        for name, tensor in self.model.state_dict().items():
-            # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
-            state_dict_info[name] = (tensor.shape, self.dtype)
+        """Prepare state dict metadata for weight refitting and IPC streaming.
 
-        return state_dict_info
+        Returns:
+            dict containing:
+                - 'weights': dict mapping weight names to (shape, dtype) tuples
+                - 'lora_enabled': bool indicating if LoRA is enabled
+                - 'lora_config': optional PeftConfig if LoRA is enabled
+                - 'lora_weights': list of LoRA weight names (when LoRA is enabled)
+        """
+        state_dict_info = {}
+        lora_weight_names = []
+
+        # Determine which weights to include based on LoRA status
+        if self.lora_enabled:
+            # Only include LoRA weights when LoRA is enabled
+            for name, tensor in self.model.state_dict().items():
+                if self._is_lora_weight(name):
+                    # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
+                    state_dict_info[name] = (tensor.shape, self.dtype)
+                    lora_weight_names.append(name)
+        else:
+            # Include all weights when LoRA is not enabled
+            for name, tensor in self.model.state_dict().items():
+                # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
+                state_dict_info[name] = (tensor.shape, self.dtype)
+
+        refit_info = {
+            "weights": state_dict_info,
+            "lora_enabled": self.lora_enabled,
+            "lora_config": self.peft_config.to_dict()
+            if self.lora_enabled and self.peft_config
+            else None,
+            "lora_weights": lora_weight_names if self.lora_enabled else None,
+        }
+
+        return refit_info
 
     @torch.no_grad()
     def calibrate_qkv_fp8_scales(
@@ -1706,8 +1735,15 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         from nemo_rl.models.policy.utils import stream_weights_via_ipc_zmq_impl
 
         def dtensor_params_generator():
-            """Generator that yields (name, tensor) pairs, converting DTensors to local tensors."""
+            """Generator that yields (name, tensor) pairs, converting DTensors to local tensors.
+
+            Only yields LoRA weights when LoRA is enabled, otherwise yields all weights.
+            """
             for name, tensor in self.model.state_dict().items():
+                # Skip non-LoRA weights if LoRA is enabled
+                if self.lora_enabled and not self._is_lora_weight(name):
+                    continue
+
                 if isinstance(tensor, DTensor):
                     # Convert DTensor to full tensor for streaming
                     full_tensor = tensor.full_tensor()
@@ -1756,8 +1792,17 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         # param_iterator will return (name, tensor), we only need tensor
         dtensor_post_iter_func = lambda x: _dtensor_post_iter_func(x[1], self.dtype)
 
+        # Filter state dict to only include LoRA weights if LoRA is enabled
+        def _filtered_state_dict_iterator():
+            """Iterator that yields only LoRA weights when LoRA is enabled."""
+            for name, tensor in self.model.state_dict().items():
+                # Skip non-LoRA weights if LoRA is enabled
+                if self.lora_enabled and not self._is_lora_weight(name):
+                    continue
+                yield (name, tensor)
+
         packed_broadcast_producer(
-            iterator=iter(self.model.state_dict().items()),
+            iterator=_filtered_state_dict_iterator(),
             group=self.model_update_group,
             src=0,
             post_iter_func=dtensor_post_iter_func,
