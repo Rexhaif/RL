@@ -36,7 +36,7 @@ policy:
   offload_optimizer_for_logprob: false
 
   dtensor_cfg:
-    enabled: true
+    enabled: false
     env_vars: {}
     cpu_offload: False
     sequence_parallel: false
@@ -75,7 +75,7 @@ policy:
     
   ## ignored since enabled=false, but needed for testing purposes
   megatron_cfg:
-    enabled: false
+    enabled: true
     env_vars: {}
     empty_unused_memory_level: 1
     activation_checkpointing: false
