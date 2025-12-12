@@ -51,7 +51,7 @@ from megatron.bridge.training.initialize import (
 from megatron.bridge.training.optim import setup_optimizer
 from megatron.bridge.training.setup import (
     _update_model_config_funcs,
-    _apply_peft_transformation,
+    _create_peft_pre_wrap_hook,
 )
 from megatron.bridge.training.state import GlobalState
 from megatron.bridge.training.tokenizers.tokenizer import build_tokenizer
@@ -87,6 +87,7 @@ from megatron.core.parallel_state import (
 )
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.rerun_state_machine import get_rerun_state_machine
+from megatron.core.transformer import MegatronModule
 from megatron.core.transformer.module import Float16Module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.utils import get_ltor_masks_and_position_ids
@@ -275,6 +276,15 @@ def setup_megatron_model(
 
         mixed_precision_wrapper = CustomFloat16Module
         pre_wrap_hook.extend([freeze_moe_router])
+    
+    peft_cfg = LoRA(target_modules=[])
+    cfg.peft = peft_cfg
+    pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
+    cfg.model.register_pre_wrap_hook(pre_peft_hook)
+    def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
+        model = pre_peft_hook(model)
+        return model
+    peft_hook = composed_peft_hook
 
     # Model, optimizer, and learning rate.
     model = get_model(
@@ -283,13 +293,10 @@ def setup_megatron_model(
         use_torch_fsdp2=cfg.dist.use_torch_fsdp2,
         overlap_param_gather_with_optimizer_step=cfg.optimizer.overlap_param_gather_with_optimizer_step,
         data_parallel_random_init=cfg.rng.data_parallel_random_init,
-        pre_wrap_hook=pre_wrap_hook,
+        pre_wrap_hook=peft_hook,
         mixed_precision_wrapper=mixed_precision_wrapper,
     )
-    print("Applying PEFT transformation...")
-    cfg_peft = LoRA(target_modules=[])
-    model = _apply_peft_transformation(cfg_peft, model)
-    print("PEFT transformation applied")
+    
 
     if load_optimizer:
         optimizer, scheduler = setup_optimizer(
