@@ -311,15 +311,16 @@ def setup_megatron_model(
 
     print("Model, optimizer, and learning rate scheduler built")
     torch.distributed.barrier()
+    if cfg.peft is not None:
+        should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load))
+        if should_load_checkpoint:
+            # The finetune toggle is explicitly set to True in order to avoid loading optimizer and RNG states
+            # This is switched off here in order to load these states from the checkpoint
+            cfg.checkpoint.finetune = False
+    else:
+        should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load)) or (cfg.checkpoint.pretrained_checkpoint is not None and checkpoint_exists(cfg.checkpoint.pretrained_checkpoint))
 
-    # Load checkpoint if applicable
-    if (
-        cfg.checkpoint.load is not None
-        or cfg.checkpoint.pretrained_checkpoint is not None
-    ) and (
-        checkpoint_exists(cfg.checkpoint.load)
-        or checkpoint_exists(cfg.checkpoint.pretrained_checkpoint)
-    ):
+    if should_load_checkpoint:
         load_checkpoint(
             state,
             model,
