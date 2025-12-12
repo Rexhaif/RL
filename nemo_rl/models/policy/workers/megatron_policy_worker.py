@@ -23,6 +23,7 @@ from typing import Any, Iterator, Optional, TypeVar, cast
 
 import ray
 import torch
+from megatron.bridge.peft.lora import LoRA
 from megatron.bridge import AutoBridge
 from megatron.bridge.models.model_provider import get_model
 from megatron.bridge.training import fault_tolerance
@@ -50,6 +51,7 @@ from megatron.bridge.training.initialize import (
 from megatron.bridge.training.optim import setup_optimizer
 from megatron.bridge.training.setup import (
     _update_model_config_funcs,
+    _apply_peft_transformation,
 )
 from megatron.bridge.training.state import GlobalState
 from megatron.bridge.training.tokenizers.tokenizer import build_tokenizer
@@ -284,6 +286,11 @@ def setup_megatron_model(
         pre_wrap_hook=pre_wrap_hook,
         mixed_precision_wrapper=mixed_precision_wrapper,
     )
+    print("Applying PEFT transformation...")
+    cfg_peft = LoRA(target_modules=[])
+    model = _apply_peft_transformation(cfg_peft, model)
+    print("PEFT transformation applied")
+
     if load_optimizer:
         optimizer, scheduler = setup_optimizer(
             optimizer_config=cfg.optimizer,
