@@ -18,6 +18,7 @@ from typing import Any
 import torch
 import zmq
 
+from nemo_rl.models.generation.lora import LoRARequestWithCfgAndWeights
 from nemo_rl.models.policy.utils import (
     IPCProtocol,
     calculate_aligned_size,
@@ -126,7 +127,9 @@ class VllmInternalWorkerExtension:
         )
 
     @wrap_with_nvtx_name("vllm_internal_worker_extension/update_weights_via_ipc_zmq")
-    def update_weights_via_ipc_zmq(self) -> bool:
+    def update_weights_via_ipc_zmq(
+        self, refit_base_model_weights: bool = True, refit_lora_weights: bool = False
+    ) -> bool:
         """Receive and update model weights via ZMQ IPC socket.
 
         Returns:
@@ -183,7 +186,19 @@ class VllmInternalWorkerExtension:
                     # the fp8 load_weights additionally casts bf16 weights into fp8
                     fp8.load_weights(weights, self.model_runner)
                 else:
-                    self.model_runner.model.load_weights(weights=weights)
+                    if refit_lora_weights:
+                        self.model_runner.model.load_weights(
+                            weights=weights, lora_weights=weights
+                        )
+                    else:
+                        lora_request = LoRARequestWithCfgAndWeights(
+                            lora_name="0",
+                            lora_int_id=0,
+                            lora_path="dummy_lora_path",
+                            lora_cfg=self.model_runner.vllm_config.lora_cfg,
+                            lora_weights=dict(weights),
+                        )
+                        self.load_weights_self_defined(lora_request=lora_request)
 
                 torch.cuda.current_stream().synchronize()
 
@@ -273,3 +288,17 @@ class VllmInternalWorkerExtension:
     def stop_gpu_profiling(self) -> None:
         """Stop GPU profiling."""
         torch.cuda.profiler.stop()
+
+    def load_weights_self_defined(
+        self, lora_request: LoRARequestWithCfgAndWeights
+    ) -> bool:
+        """Load weights into the vLLM engine."""
+        try:
+            # print(sorted(dir(self)))
+            self.add_lora(lora_request=lora_request)
+            # 'list_loras' 'pin_lora' 'remove_lora'
+            return True
+        except Exception as e:
+            print(f"Exception during load_weights_self_defined: {e}")
+            print(f"Traceback:\n{traceback.format_exc()}")
+            return False

@@ -149,23 +149,6 @@ class MegatronConfig(TypedDict):
     distributed_data_parallel_config: MegatronDDPConfig
 
 
-class LoRAConfigDisabled(TypedDict):
-    enabled: Literal[False]
-
-
-class LoRAConfig(TypedDict):
-    enabled: Literal[True]
-    target_modules: list[str]
-    exclude_modules: list[str]
-    match_all_linear: bool
-    dim: int
-    alpha: int
-    dropout: float
-    dropout_position: Literal["pre", "post"]
-    lora_A_init: str
-    use_triton: bool
-
-
 class TokenizerConfig(TypedDict):
     name: str
     chat_template: NotRequired[str]

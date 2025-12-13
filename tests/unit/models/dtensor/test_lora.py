@@ -201,6 +201,18 @@ def test_lora_patch_applies_to_selected_module(model):
     assert not isinstance(model.linear2, LinearLoRA)
 
 
+def test_lora_qwen_3_06B():
+    """Tests that LoRA is applied correctly to a Qwen3 0.6B model."""
+    from nemo_automodel import NeMoAutoModelForCausalLM
+
+    model = NeMoAutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B")
+    apply_lora_to_linear_modules(
+        model, PeftConfig(target_modules=[], match_all_linear=True, dim=8, alpha=8)
+    )
+    for name, module in model.state_dict().items():
+        print(f"name: {name}, module: {module.shape}")
+
+
 def test_lora_patch_on_model_without_config(model_no_config):
     """LoRA should still patch correctly even if the model lacks `config`."""
     apply_lora_to_linear_modules(

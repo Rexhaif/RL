@@ -1682,6 +1682,8 @@ class DTensorPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         self,
         buffer_size_bytes: int = 0,
         kv_scales: Optional[dict[str, float]] = None,
+        refit_base_model_weights: bool = True,
+        refit_lora_weights: bool = False,
     ) -> None:
         """Stream model weights to peer process via ZMQ IPC socket."""
         if kv_scales is not None:
@@ -1722,7 +1724,10 @@ class DTensorPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
     @torch.no_grad()
     def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
+        self,
+        kv_scales: Optional[dict[str, float]] = None,
+        refit_base_model_weights: bool = True,
+        refit_lora_weights: bool = False,
     ) -> None:
         """Broadcast the weights for collective communication."""
         if kv_scales is not None:

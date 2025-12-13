@@ -2078,7 +2078,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
     @torch.no_grad()
     def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
+        self,
+        kv_scales: Optional[dict[str, float]] = None,
     ) -> None:
         """Broadcast the weights for collective communication."""
         # param_iterator will return (name, tensor), we only need tensor.

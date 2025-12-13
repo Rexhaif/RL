@@ -908,6 +908,8 @@ def refit_policy_generation(
     _refit_buffer_size_gb: Optional[int] = None,
     timer: Optional[Timer] = None,
     kv_scales: Optional[dict[str, float]] = None,
+    refit_base_model_weights: bool = True,
+    refit_lora_weights: bool = False,
 ) -> None:
     """Refit the policy generation interface with the latest policy weights.
 
@@ -919,7 +921,13 @@ def refit_policy_generation(
             This parameter is primarily used for testing.
         timer: Optional Timer used to time the prepare/transfer/update phase
         kv_scales: Optional dictionary of KV cache scales for FP8 quantization.
+        refit_base_model_weights: Optional flag to indicate if base model weights should be refitted.
+        refit_lora_weights: Optional flag to indicate if lora weights should be refitted.
     """
+    assert bool(refit_base_model_weights) ^ bool(refit_lora_weights), (
+        "Exactly one of refit_base_model_weights or refit_lora_weights must be True"
+    )
+
     if colocated_inference:
         policy.offload_before_refit()
         policy_generation.prepare_for_generation(tags=["weights"])
@@ -944,18 +952,27 @@ def refit_policy_generation(
                 buffer_size_bytes = int(
                     policy.get_free_memory_bytes() * float(memory_ratio)
                 )
-
             futures_train = policy.stream_weights_via_ipc_zmq(
-                buffer_size_bytes=buffer_size_bytes, kv_scales=kv_scales
+                buffer_size_bytes=buffer_size_bytes,
+                kv_scales=kv_scales,
+                refit_base_model_weights=refit_base_model_weights,
+                refit_lora_weights=refit_lora_weights,
             )
-            futures_inference = policy_generation.update_weights_via_ipc_zmq()
+            futures_inference = policy_generation.update_weights_via_ipc_zmq(
+                refit_base_model_weights=refit_base_model_weights,
+                refit_lora_weights=refit_lora_weights,
+            )
             # wait for all futures to complete
             ray.get(futures_train)
             results = ray.get(futures_inference)
             update_success = all(result for result in results if result is not None)
         else:
             # update weights through nccl
-            futures_train = policy.broadcast_weights_for_collective(kv_scales=kv_scales)
+            futures_train = policy.broadcast_weights_for_collective(
+                kv_scales=kv_scales,
+                refit_base_model_weights=refit_base_model_weights,
+                refit_lora_weights=refit_lora_weights,
+            )
             futures_inference = policy_generation.update_weights_from_collective()
             # wait for all futures to complete
             ray.get(futures_train)
@@ -1039,12 +1056,30 @@ def grpo_train(
     val_period = master_config["grpo"]["val_period"]
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
+    enable_lora = master_config["policy"]["generation"]["lora_cfg"].get(
+        "enabled", False
+    )
+
     # Run validation at the start if configured
     # TODO: Add validation with kv scales if needed
     if val_at_start and current_step == 0:
         print("\n🔍 Running initial validation...", flush=True)
         if NEED_REFIT and POLICY_GENERATION_STALE:
-            refit_policy_generation(policy, policy_generation, colocated_inference)
+            refit_policy_generation(
+                policy,
+                policy_generation,
+                colocated_inference,
+                refit_base_model_weights=True,
+                refit_lora_weights=False,
+            )
+            if enable_lora:
+                refit_policy_generation(
+                    policy,
+                    policy_generation,
+                    colocated_inference,
+                    refit_base_model_weights=False,
+                    refit_lora_weights=True,
+                )
             POLICY_GENERATION_STALE = False
         else:
             policy_generation.prepare_for_generation()

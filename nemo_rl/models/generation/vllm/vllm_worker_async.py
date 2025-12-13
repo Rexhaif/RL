@@ -950,6 +950,8 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
     async def update_weights_via_ipc_zmq_async(
         self,
+        refit_base_model_weights: bool = True,
+        refit_lora_weights: bool = False,
     ) -> bool:
         """Async version of update_weights_via_ipc_zmq."""
         try:

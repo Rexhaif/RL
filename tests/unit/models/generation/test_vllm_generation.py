@@ -35,10 +35,11 @@ from nemo_rl.models.generation.vllm import VllmConfig, VllmGeneration
 from nemo_rl.models.generation.vllm.vllm_worker_async import (
     _replace_prefix_tokens,
 )
-from nemo_rl.models.policy import PolicyConfig
+from nemo_rl.models.policy import LoRAConfig, PolicyConfig
 from nemo_rl.models.policy.lm_policy import Policy
 
-model_name = "Qwen/Qwen3-0.6B"
+# model_name = "Qwen/Qwen3-0.6B"
+model_name = "/lustre/fs1/portfolios/coreai/projects/coreai_dlalgo_nemorl/users/ruit/hf_home/hub/models--Qwen--Qwen3-0.6B/snapshots/c1899de289a04d12100db370d81485cdf75e47ca/"
 # Define basic vLLM test config
 basic_vllm_test_config: VllmConfig = {
     "backend": "vllm",
@@ -125,6 +126,19 @@ basic_dtensor_test_config: PolicyConfig = {
     "max_grad_norm": 1.0,
     "make_sequence_length_divisible_by": 1,
     "generation": deepcopy(basic_vllm_test_config),
+}
+
+basic_lora_test_config: LoRAConfig = {
+    "enabled": True,
+    "target_modules": [],
+    "exclude_modules": [],
+    "match_all_linear": True,
+    "dim": 8,
+    "alpha": 32,
+    "dropout": 0.0,
+    "dropout_position": "post",
+    "lora_A_init": "xavier",
+    "use_triton": True,
 }
 
 
@@ -229,8 +243,8 @@ def cluster():
     virtual_cluster = RayVirtualCluster(
         bundle_ct_per_node_list=[2],  # 1 node with 2 GPU bundle
         use_gpus=True,
-        max_colocated_worker_groups=2,
-        num_gpus_per_node=2,  # Use available GPUs
+        max_colocated_worker_groups=1,
+        num_gpus_per_node=1,  # Use available GPUs
         name="vllm-test-cluster",
     )
     yield virtual_cluster
@@ -2509,3 +2523,196 @@ def test_vllm_megatron_weight_update_with_packing(cluster, test_input_data):
             megatron_policy.shutdown()
         if vllm_generation:
             vllm_generation.shutdown()
+
+
+# ===============================
+# LoRA tests
+# ===============================
+
+
+def test_vllm_lora_flag_propagates_and_engine_initializes(
+    cluster, tokenizer, test_input_data
+):
+    """Ensure enabling LoRA in VLLM config is propagated and engine initializes successfully.
+
+    This verifies:
+    - policy.generation.lora_cfg.enabled is respected by VLLM path
+    - engine can be constructed and run a tiny generate call when LoRA is enabled
+      (no adapter is loaded here; we only check that enable_lora plumbing doesn't break)
+    """
+    vllm_config = deepcopy(basic_vllm_test_config)
+    vllm_config["lora_cfg"] = deepcopy(basic_lora_test_config)
+    # Use sync engine for simpler assertions
+    vllm_config["vllm_cfg"]["async_engine"] = False
+    vllm_config = configure_generation_config(vllm_config, tokenizer)
+
+    policy = VllmGeneration(cluster, vllm_config)
+    try:
+        # Config flag is set and visible at policy level
+        assert policy.cfg["lora_cfg"]["enabled"] is True
+        assert policy.cfg["lora_cfg"]["dim"] == basic_lora_test_config["dim"]
+
+        # Inspect LoRA layers
+        # In vLLM, LoRA weights are stored as 4D tensors (one per slice):
+        #   A weights: (max_loras, 1, rank, in_features)
+        #   B weights: (max_loras, 1, out_features_slice, rank)
+        # The 2nd dimension is always 1 (placeholder used by the Punica kernel).
+        # out_features_slice equals the local shard size under parallel/sharded setups;
+        # otherwise, it equals the full out_features.
+        lora_layers = policy.get_lora_layers()
+        assert len(lora_layers) == 2, "2 VLLM instance returned lora layers"
+        assert len(lora_layers[0]) == 1
+        assert len(lora_layers[0][0]) == 112, (
+            "28 layers per VLLM instance * 4 (qkv_proj, o_proj, gate_up_proj, down_proj) = 112 lora layers returned"
+        )
+        assert lora_layers[0][0][0]["name"] == "model.layers.0.self_attn.qkv_proj", (
+            "First layer name should be model.layers.0.self_attn.qkv_proj"
+        )
+        assert lora_layers[0][0][0]["a_shapes"] == [
+            (1, 1, 8, 1024),
+            (1, 1, 8, 1024),
+            (1, 1, 8, 1024),
+        ], (
+            "First layer A shapes should be (1, 1, 8, 1024), (1, 1, 8, 1024), (1, 1, 8, 1024)"
+        )
+        assert lora_layers[0][0][0]["b_shapes"] == [
+            (1, 1, 2048, 8),
+            (1, 1, 1024, 8),
+            (1, 1, 1024, 8),
+        ], (
+            "First layer B shapes should be (1, 1, 2048, 8), (1, 1, 1024, 8), (1, 1, 1024, 8)"
+        )
+        assert lora_layers[0][0][0]["rank"] == 8, "First layer rank should be 8"
+        assert lora_layers[0][0][1]["name"] == "model.layers.0.self_attn.o_proj", (
+            "Second layer name should be model.layers.0.self_attn.o_proj"
+        )
+        assert lora_layers[0][0][1]["a_shapes"] == [(1, 1, 8, 2048)], (
+            "Second layer A shapes should be (1, 1, 8, 1024)"
+        )
+        assert lora_layers[0][0][1]["b_shapes"] == [(1, 1, 1024, 8)], (
+            "Second layer B shapes should be (1, 1, 1024, 8)"
+        )
+        assert lora_layers[0][0][1]["rank"] == 8, "Second layer rank should be 8"
+        assert lora_layers[0][0][2]["name"] == "model.layers.0.mlp.gate_up_proj", (
+            "Third layer name should be model.layers.0.mlp.gate_up_proj"
+        )
+        assert lora_layers[0][0][2]["a_shapes"] == [(1, 1, 8, 1024), (1, 1, 8, 1024)], (
+            "Third layer A shapes should be (1, 1, 8, 1024)"
+        )
+        assert lora_layers[0][0][2]["b_shapes"] == [(1, 1, 3072, 8), (1, 1, 3072, 8)], (
+            "Third layer B shapes should be (1, 1, 1024, 8)"
+        )
+        assert lora_layers[0][0][2]["rank"] == 8, "Third layer rank should be 8"
+        assert lora_layers[0][0][3]["name"] == "model.layers.0.mlp.down_proj", (
+            "Fourth layer name should be model.layers.0.mlp.down_proj"
+        )
+        assert lora_layers[0][0][3]["a_shapes"] == [(1, 1, 8, 3072)], (
+            "Fourth layer A shapes should be (1, 1, 8, 1024)"
+        )
+        assert lora_layers[0][0][3]["b_shapes"] == [(1, 1, 1024, 8)], (
+            "Fourth layer B shapes should be (1, 1, 1024, 8)"
+        )
+        assert lora_layers[0][0][3]["rank"] == 8, "Fourth layer rank should be 8"
+
+        # Run a minimal generate to ensure engine comes up fine with LoRA enabled
+        out = policy.generate(test_input_data, greedy=True)
+        # Basic shape checks (right-padded tensors converted to texts in vLLM text path or ids in standard path)
+        assert out is not None
+    finally:
+        try:
+            policy.shutdown()
+        except Exception:
+            pass
+
+
+def test_vllm_lora_refit_sync_colocated(cluster, tokenizer):
+    """Test vLLM LoRA refit with sync engine and colocated setup."""
+    vllm_config = deepcopy(basic_vllm_test_config)
+    # vllm_config["lora_cfg"] = deepcopy(basic_lora_test_config)
+    vllm_config["vllm_cfg"]["async_engine"] = False
+    vllm_config = configure_generation_config(vllm_config, tokenizer)
+    dtensor_config = deepcopy(basic_dtensor_test_config)
+    dtensor_config["dtensor_cfg"]["_v2"] = True
+    dtensor_config["generation"]["colocated"]["enabled"] = True
+    dtensor_config["lora_cfg"] = deepcopy(basic_lora_test_config)
+
+    print("creating dtensor policy...")
+    lm_policy = Policy(cluster, dtensor_config, tokenizer)
+    print("creating vllm policy...")
+    vllm_policy = VllmGeneration(cluster, vllm_config)
+    # vllm_policy.finish_generation()
+    vllm_layers_state_dict = vllm_policy.get_all_layers()[0][0]
+    print("vllm state dict layers:")
+    for layer in vllm_layers_state_dict:
+        name = layer["name"]
+        shape = layer["shape"]
+        dtype = layer["dtype"]
+        print(f"name: {name}, shape: {shape}, dtype: {dtype}")
+
+    print("preparing refit info...")
+    state_dict_info = lm_policy.prepare_refit_info()
+    vllm_policy.prepare_refit_info(state_dict_info)
+    print("lm policy state dict layers:")
+    for name, (shape, dtype) in state_dict_info.items():
+        print(f"name: {name}, shape: {shape}, dtype: {dtype}")
+    print("refitting vllm policy...")
+    # take it outside statistics to get clean peak memory during refit
+    lm_policy.offload_before_refit()
+    # reset peak memory stats before refit
+    workers = lm_policy.worker_group.workers
+    ray.get([w.reset_peak_memory_stats.remote() for w in workers])
+    refit_policy_generation(
+        lm_policy,
+        vllm_policy,
+        vllm_config["colocated"]["enabled"],
+        _refit_buffer_size_gb=1.5,
+        refit_base_model_weights=False,
+        refit_lora_weights=True,
+    )
+    gpu_infos = ray.get([w.get_gpu_info.remote() for w in workers])
+
+    lora_layers = vllm_policy.get_lora_layers()
+
+
+def test_vllm_load_lora_weights(cluster, tokenizer):
+    """Test vLLM loading LoRA weights."""
+    from nemo_rl.models.generation.lora import LoRARequestWithCfgAndWeights
+
+    vllm_config = deepcopy(basic_vllm_test_config)
+    vllm_config["vllm_cfg"]["async_engine"] = False
+    vllm_config = configure_generation_config(vllm_config, tokenizer)
+    vllm_config["vllm_cfg"]["lora_cfg"] = deepcopy(basic_lora_test_config)
+    vllm_config["vllm_cfg"]["lora_cfg"]["enabled"] = True
+    vllm_policy = VllmGeneration(cluster, vllm_config)
+    vllm_lora_config = dict(
+        r=basic_lora_test_config["dim"],
+        lora_alpha=basic_lora_test_config["dim"],
+        target_modules=basic_lora_test_config["target_modules"],
+    )
+
+    vllm_lora_layers = vllm_policy.get_lora_layers()[0][0]
+    lora_int_id = int(100)
+    for layer in vllm_lora_layers:
+        name = layer["name"]
+        a_weights = layer["a_weights"]
+        b_weights = layer["b_weights"]
+
+        for a_weight in a_weights:
+            temp_a_weight = torch.ones(a_weight.shape).to("cuda:0")
+            lora_a_name = f"base_model.model.{name}.lora_A.weight"
+            lora_request = LoRARequestWithCfgAndWeights(
+                lora_name=f"{lora_int_id}",
+                lora_int_id=lora_int_id,
+                lora_path="dummy_lora_path",
+                lora_cfg=vllm_lora_config,
+                lora_weights=dict({lora_a_name: temp_a_weight}),
+            )
+            vllm_policy.load_weights(weights=lora_request)
+
+    # after_load_weights_lora_layers = vllm_policy.get_lora_layers()[0][0]
+    # for layer in after_load_weights_lora_layers:
+    #     name = layer["name"]
+    #     a_weights = layer["a_weights"]
+    #     b_weights = layer["b_weights"]
+    #     print(f"name: {name}, a_weights: {a_weights}")
+    #     assert a_weights[0].all() == 1, f"Weight value mismatch for {name}"

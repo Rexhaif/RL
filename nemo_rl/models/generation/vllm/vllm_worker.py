@@ -28,6 +28,7 @@ from nemo_rl.models.generation.interfaces import (
     GenerationOutputSpec,
     verify_right_padding,
 )
+from nemo_rl.models.generation.lora import apply_lora_patches
 from nemo_rl.models.generation.vllm.config import VllmConfig
 from nemo_rl.models.generation.vllm.utils import format_prompt_for_vllm_generation
 from nemo_rl.models.huggingface.common import ModelFlag
@@ -131,6 +132,7 @@ class BaseVllmGenerationWorker:
         """
         self.cfg = config
         self.model_name = self.cfg["model_name"]
+        self.lora_cfg = self.cfg["vllm_cfg"].get("lora_cfg", None)
         self.tensor_parallel_size = self.cfg["vllm_cfg"]["tensor_parallel_size"]
         self.pipeline_parallel_size = self.cfg["vllm_cfg"]["pipeline_parallel_size"]
         self.expert_parallel_size = self.cfg["vllm_cfg"]["expert_parallel_size"]
@@ -304,6 +306,13 @@ class BaseVllmGenerationWorker:
         vllm_kwargs["hf_overrides"].update(
             self.cfg["vllm_cfg"].get("hf_overrides", {}) or {}
         )
+
+        # Lora is enabled, add it to the vllm kwargs
+        if self.lora_cfg is not None and self.lora_cfg["enabled"]:
+            apply_lora_patches()
+            vllm_kwargs["enable_lora"] = True
+            vllm_kwargs["max_loras"] = 1  # only support one lora adapter
+            vllm_kwargs["max_lora_rank"] = self.lora_cfg["dim"]
 
         llm_kwargs = dict(
             model=self.model_name,
@@ -630,12 +639,71 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         )
         return cast(list[str], list_of_worker_results)
 
+    def get_lora_layers(self) -> list[dict[str, Any]]:
+        """Get the LoRA layers from the vLLM engine."""
+
+        def _get_lora_layers(self):
+            model = self.get_model()
+            if model is None:
+                return []
+
+            from vllm.lora.layers.base_linear import BaseLinearLayerWithLoRA
+
+            details = []
+            for name, module in model.named_modules():
+                if isinstance(module, BaseLinearLayerWithLoRA):
+                    a_shapes = [tuple(t.shape) for t in module.lora_a_stacked]
+                    b_shapes = [tuple(t.shape) for t in module.lora_b_stacked]
+                    a_weights = [t for t in module.lora_a_stacked]
+                    b_weights = [t for t in module.lora_b_stacked]
+                    details.append(
+                        {
+                            "name": name,  # layer name
+                            "base": type(module.base_layer).__name__,  # base layer type
+                            "a_shapes": a_shapes,  # A stacked weight shapes (max_loras, 1, out, in)
+                            "b_shapes": b_shapes,  # B stacked weight shapes (max_loras, 1, out, rank)
+                            "rank": getattr(module.lora_config, "max_lora_rank", None),
+                            "a_weights": a_weights,
+                            "b_weights": b_weights,
+                        }
+                    )
+            return details
+
+        results = self.llm.collective_rpc(_get_lora_layers)
+        return results
+
+    def get_all_layers(self) -> list[dict[str, Any]]:
+        """Get all the layers from the vLLM engine."""
+
+        def _get_all_layers(self):
+            model = self.get_model()
+            if model is None:
+                return []
+            details = []
+            # for name, module in model.state_dict().items():
+            for name, module in model.named_modules():
+                details.append(
+                    {
+                        "name": name,
+                        # "shape": module.shape,
+                        # "dtype": module.dtype,
+                        # "module": module,
+                    }
+                )
+                print(f"name: {name}, module: {module}")
+            return details
+
+        results = self.llm.collective_rpc(_get_all_layers)
+        return results
+
     def prepare_refit_info(self, state_dict_info: dict[str, Any]) -> None:
         """Prepare the info for refit."""
         self.llm.collective_rpc("prepare_refit_info", args=(state_dict_info,))
 
     @wrap_with_nvtx_name("vllm_genertion_worker/update_weights_via_ipc_zmq")
-    def update_weights_via_ipc_zmq(self) -> bool:
+    def update_weights_via_ipc_zmq(
+        self, refit_base_model_weights: bool = True, refit_lora_weights: bool = False
+    ) -> bool:
         """Update weights from IPC handles via ZMQ socket."""
         try:
             assert self.llm is not None, (
@@ -649,7 +717,9 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
 
             result_or_coro = self.llm.collective_rpc(
                 "update_weights_via_ipc_zmq",
-                args=tuple(),
+                args=(),
+                refit_base_model_weights=refit_base_model_weights,
+                refit_lora_weights=refit_lora_weights,
             )
             worker_result = result_or_coro[0]
 
@@ -661,6 +731,21 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
             return True
         except Exception as e:
             print(f"Exception during collective_rpc for weight update: {e}")
+            import traceback
+
+            traceback.print_exc()
+            return False
+
+    def load_weights(self, weights: list[tuple[str, torch.Tensor]]) -> bool:
+        """Load weights into the vLLM engine."""
+        try:
+            assert self.llm is not None, (
+                "Attempting to load weights with either an uninitialized vLLM or non-model-owner"
+            )
+            self.llm.collective_rpc("load_weights_self_defined", args=(weights,))
+            return True
+        except Exception as e:
+            print(f"Exception during load_weights: {e}")
             import traceback
 
             traceback.print_exc()

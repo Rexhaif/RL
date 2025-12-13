@@ -1661,44 +1661,27 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         """
         return self.model.config
 
+    def _is_lora_weight(self, name: str) -> bool:
+        """Check if the weight is a lora weight."""
+        return (
+            name.endswith(".lora_A.weight")
+            or name.endswith(".lora_B.weight")
+            or name.endswith(".lora_scaling.weight")
+        )
+
+    def _is_base_model_weight(self, name: str) -> bool:
+        """Check if the weight is a base model weight."""
+        return not self._is_lora_weight(name)
+
     @torch.no_grad()
     def prepare_refit_info(self) -> Optional[dict[str, Any]]:
-        """Prepare state dict metadata for weight refitting and IPC streaming.
-
-        Returns:
-            dict containing:
-                - 'weights': dict mapping weight names to (shape, dtype) tuples
-                - 'lora_enabled': bool indicating if LoRA is enabled
-                - 'lora_config': optional PeftConfig if LoRA is enabled
-                - 'lora_weights': list of LoRA weight names (when LoRA is enabled)
-        """
+        """Prepare state dict metadata for weight refitting and IPC streaming."""
         state_dict_info = {}
-        lora_weight_names = []
+        for name, tensor in self.model.state_dict().items():
+            # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
+            state_dict_info[name] = (tensor.shape, self.dtype)
 
-        # Determine which weights to include based on LoRA status
-        if self.lora_enabled:
-            # Only include LoRA weights when LoRA is enabled
-            for name, tensor in self.model.state_dict().items():
-                if self._is_lora_weight(name):
-                    # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
-                    state_dict_info[name] = (tensor.shape, self.dtype)
-                    lora_weight_names.append(name)
-        else:
-            # Include all weights when LoRA is not enabled
-            for name, tensor in self.model.state_dict().items():
-                # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
-                state_dict_info[name] = (tensor.shape, self.dtype)
-
-        refit_info = {
-            "weights": state_dict_info,
-            "lora_enabled": self.lora_enabled,
-            "lora_config": self.peft_config.to_dict()
-            if self.lora_enabled and self.peft_config
-            else None,
-            "lora_weights": lora_weight_names if self.lora_enabled else None,
-        }
-
-        return refit_info
+        return state_dict_info
 
     @torch.no_grad()
     def calibrate_qkv_fp8_scales(
@@ -1720,6 +1703,8 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         self,
         buffer_size_bytes: int = 0,
         kv_scales: Optional[dict[str, float]] = None,
+        refit_base_model_weights: bool = True,
+        refit_lora_weights: bool = False,
     ) -> None:
         """Stream model weights to peer process via ZMQ IPC socket."""
         if kv_scales is not None:
@@ -1740,8 +1725,11 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             Only yields LoRA weights when LoRA is enabled, otherwise yields all weights.
             """
             for name, tensor in self.model.state_dict().items():
-                # Skip non-LoRA weights if LoRA is enabled
-                if self.lora_enabled and not self._is_lora_weight(name):
+                # Skip base model weights if skip_base_model_weights is True
+                if self._is_base_model_weight(name) and not refit_base_model_weights:
+                    continue
+
+                if self._is_lora_weight(name) and not refit_lora_weights:
                     continue
 
                 if isinstance(tensor, DTensor):
@@ -1767,7 +1755,10 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
 
     @torch.no_grad()
     def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
+        self,
+        kv_scales: Optional[dict[str, float]] = None,
+        refit_base_model_weights: bool = True,
+        refit_lora_weights: bool = False,
     ) -> None:
         """Broadcast the weights for collective communication."""
         if kv_scales is not None:
@@ -1792,12 +1783,14 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         # param_iterator will return (name, tensor), we only need tensor
         dtensor_post_iter_func = lambda x: _dtensor_post_iter_func(x[1], self.dtype)
 
-        # Filter state dict to only include LoRA weights if LoRA is enabled
+        # Filter state dict to only include base model weights if skip_base_model_weights is True
         def _filtered_state_dict_iterator():
-            """Iterator that yields only LoRA weights when LoRA is enabled."""
+            """Iterator that yields only base model weights when skip_base_model_weights is True."""
             for name, tensor in self.model.state_dict().items():
-                # Skip non-LoRA weights if LoRA is enabled
-                if self.lora_enabled and not self._is_lora_weight(name):
+                # Skip base model weights if skip_base_model_weights is True
+                if self._is_base_model_weight(name) and not refit_base_model_weights:
+                    continue
+                if self._is_lora_weight(name) and not refit_lora_weights:
                     continue
                 yield (name, tensor)
 
