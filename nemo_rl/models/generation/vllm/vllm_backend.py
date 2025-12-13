@@ -186,19 +186,20 @@ class VllmInternalWorkerExtension:
                     # the fp8 load_weights additionally casts bf16 weights into fp8
                     fp8.load_weights(weights, self.model_runner)
                 else:
-                    if refit_lora_weights:
-                        self.model_runner.model.load_weights(
-                            weights=weights, lora_weights=weights
-                        )
+                    if refit_base_model_weights:
+                        self.model_runner.model.load_weights(weights=weights)
                     else:
                         lora_request = LoRARequestWithCfgAndWeights(
                             lora_name="0",
                             lora_int_id=0,
                             lora_path="dummy_lora_path",
                             lora_cfg=self.model_runner.vllm_config.lora_cfg,
-                            lora_weights=dict(weights),
+                            lora_weights=dict[Any, Any](weights),
                         )
-                        self.load_weights_self_defined(lora_request=lora_request)
+                        print(
+                            f"lora_request in update_weights_via_ipc_zmq: {lora_request}"
+                        )
+                        self.add_lora(lora_request=lora_request)
 
                 torch.cuda.current_stream().synchronize()
 

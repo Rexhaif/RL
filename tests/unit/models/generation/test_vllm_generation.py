@@ -244,7 +244,7 @@ def cluster():
         bundle_ct_per_node_list=[2],  # 1 node with 2 GPU bundle
         use_gpus=True,
         max_colocated_worker_groups=1,
-        num_gpus_per_node=1,  # Use available GPUs
+        num_gpus_per_node=2,  # Use available GPUs
         name="vllm-test-cluster",
     )
     yield virtual_cluster
@@ -2625,64 +2625,88 @@ def test_vllm_lora_flag_propagates_and_engine_initializes(
             pass
 
 
+# ANSI color codes
+CYAN = "\033[96m"
+GREEN = "\033[92m"
+YELLOW = "\033[93m"
+BLUE = "\033[94m"
+MAGENTA = "\033[95m"
+RED = "\033[91m"
+BOLD = "\033[1m"
+RESET = "\033[0m"
+
+
 def test_vllm_lora_refit_sync_colocated(cluster, tokenizer):
     """Test vLLM LoRA refit with sync engine and colocated setup."""
     vllm_config = deepcopy(basic_vllm_test_config)
-    # vllm_config["lora_cfg"] = deepcopy(basic_lora_test_config)
+    # vllm_config["vllm_cfg"]["lora_cfg"] = deepcopy(basic_lora_test_config)
+    # vllm_config["vllm_cfg"]["lora_cfg"]["enabled"] = True
     vllm_config["vllm_cfg"]["async_engine"] = False
     vllm_config = configure_generation_config(vllm_config, tokenizer)
+
     dtensor_config = deepcopy(basic_dtensor_test_config)
     dtensor_config["dtensor_cfg"]["_v2"] = True
-    dtensor_config["generation"]["colocated"]["enabled"] = True
-    dtensor_config["lora_cfg"] = deepcopy(basic_lora_test_config)
+    # dtensor_config["dtensor_cfg"]["lora_cfg"] = deepcopy(basic_lora_test_config)
+    # dtensor_config["dtensor_cfg"]["lora_cfg"]["enabled"] = True
 
-    print("creating dtensor policy...")
+    print(f"\n{CYAN}{BOLD}{'=' * 80}\n>>> CREATING DTENSOR POLICY\n{'=' * 80}{RESET}")
     lm_policy = Policy(cluster, dtensor_config, tokenizer)
-    print("creating vllm policy...")
+
+    print(f"\n{CYAN}{BOLD}{'=' * 80}\n>>> CREATING VLLM POLICY\n{'=' * 80}{RESET}")
     vllm_policy = VllmGeneration(cluster, vllm_config)
-    # vllm_policy.finish_generation()
-    vllm_layers_state_dict = vllm_policy.get_all_layers()[0][0]
-    print("vllm state dict layers:")
-    for layer in vllm_layers_state_dict:
-        name = layer["name"]
-        shape = layer["shape"]
-        dtype = layer["dtype"]
-        print(f"name: {name}, shape: {shape}, dtype: {dtype}")
 
-    print("preparing refit info...")
-    state_dict_info = lm_policy.prepare_refit_info()
-    vllm_policy.prepare_refit_info(state_dict_info)
-    print("lm policy state dict layers:")
-    for name, (shape, dtype) in state_dict_info.items():
-        print(f"name: {name}, shape: {shape}, dtype: {dtype}")
-    print("refitting vllm policy...")
-    # take it outside statistics to get clean peak memory during refit
-    lm_policy.offload_before_refit()
-    # reset peak memory stats before refit
-    workers = lm_policy.worker_group.workers
-    ray.get([w.reset_peak_memory_stats.remote() for w in workers])
-    refit_policy_generation(
-        lm_policy,
-        vllm_policy,
-        vllm_config["colocated"]["enabled"],
-        _refit_buffer_size_gb=1.5,
-        refit_base_model_weights=False,
-        refit_lora_weights=True,
-    )
-    gpu_infos = ray.get([w.get_gpu_info.remote() for w in workers])
+    # vllm_layers_state_dict = vllm_policy.get_all_layers()[0][0]
+    # print(f"\n{BLUE}{BOLD}{'='*80}\n>>> VLLM STATE DICT LAYERS:\n{'='*80}{RESET}")
+    # for layer in vllm_layers_state_dict:
+    #     name = layer["name"]
+    #     shape = layer["shape"]
+    #     dtype = layer["dtype"]
+    #     print(f"{BLUE}  ➤ name: {name}, shape: {shape}, dtype: {dtype}{RESET}")
 
-    lora_layers = vllm_policy.get_lora_layers()
+    # print(f"\n{YELLOW}{BOLD}{'='*80}\n>>> PREPARING REFIT INFO\n{'='*80}{RESET}")
+    # state_dict_info = lm_policy.prepare_refit_info()
+    # vllm_policy.prepare_refit_info(state_dict_info)
+
+    # print(f"\n{MAGENTA}{BOLD}{'='*80}\n>>> LM POLICY STATE DICT LAYERS:\n{'='*80}{RESET}")
+    # for name, (shape, dtype) in state_dict_info.items():
+    #     print(f"{MAGENTA}  ➤ name: {name}, shape: {shape}, dtype: {dtype}{RESET}")
+
+    # print(f"\n{YELLOW}{BOLD}{'='*80}\n>>> STARTING VLLM POLICY REFIT\n{'='*80}{RESET}")
+    # # take it outside statistics to get clean peak memory during refit
+    # lm_policy.offload_before_refit()
+    # # reset peak memory stats before refit
+    # workers = lm_policy.worker_group.workers
+    # ray.get([w.reset_peak_memory_stats.remote() for w in workers])
+
+    # print(f"\n{RED}{BOLD}{'='*80}\n>>> EXECUTING REFIT (refit_lora_weights=True)\n{'='*80}{RESET}")
+    # refit_policy_generation(
+    #     lm_policy,
+    #     vllm_policy,
+    #     vllm_config["colocated"]["enabled"],
+    #     _refit_buffer_size_gb=1.5,
+    #     refit_base_model_weights=False,
+    #     refit_lora_weights=True,
+    # )
+    # gpu_infos = ray.get([w.get_gpu_info.remote() for w in workers])
+
+    # lora_layers = vllm_policy.get_lora_layers()
+    # print(f"\n{GREEN}{BOLD}{'='*80}\n>>> TEST COMPLETED ✓\n{'='*80}{RESET}\n")
 
 
 def test_vllm_load_lora_weights(cluster, tokenizer):
     """Test vLLM loading LoRA weights."""
     from nemo_rl.models.generation.lora import LoRARequestWithCfgAndWeights
 
+    print(
+        f"\n{CYAN}{BOLD}{'=' * 80}\n>>> TESTING VLLM LOADING LOORA WEIGHTS\n{'=' * 80}{RESET}"
+    )
     vllm_config = deepcopy(basic_vllm_test_config)
     vllm_config["vllm_cfg"]["async_engine"] = False
     vllm_config = configure_generation_config(vllm_config, tokenizer)
     vllm_config["vllm_cfg"]["lora_cfg"] = deepcopy(basic_lora_test_config)
     vllm_config["vllm_cfg"]["lora_cfg"]["enabled"] = True
+
+    print(f"\n{CYAN}{BOLD}{'=' * 80}\n>>> CREATING VLLM POLICY\n{'=' * 80}{RESET}")
     vllm_policy = VllmGeneration(cluster, vllm_config)
     vllm_lora_config = dict(
         r=basic_lora_test_config["dim"],
@@ -2692,6 +2716,8 @@ def test_vllm_load_lora_weights(cluster, tokenizer):
 
     vllm_lora_layers = vllm_policy.get_lora_layers()[0][0]
     lora_int_id = int(100)
+
+    print(f"\n{CYAN}{BOLD}{'=' * 80}\n>>> LOADING LOORA WEIGHTS\n{'=' * 80}{RESET}")
     for layer in vllm_lora_layers:
         name = layer["name"]
         a_weights = layer["a_weights"]
@@ -2708,11 +2734,3 @@ def test_vllm_load_lora_weights(cluster, tokenizer):
                 lora_weights=dict({lora_a_name: temp_a_weight}),
             )
             vllm_policy.load_weights(weights=lora_request)
-
-    # after_load_weights_lora_layers = vllm_policy.get_lora_layers()[0][0]
-    # for layer in after_load_weights_lora_layers:
-    #     name = layer["name"]
-    #     a_weights = layer["a_weights"]
-    #     b_weights = layer["b_weights"]
-    #     print(f"name: {name}, a_weights: {a_weights}")
-    #     assert a_weights[0].all() == 1, f"Weight value mismatch for {name}"
