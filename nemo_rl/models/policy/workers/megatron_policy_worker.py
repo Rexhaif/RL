@@ -277,14 +277,31 @@ def setup_megatron_model(
         mixed_precision_wrapper = CustomFloat16Module
         pre_wrap_hook.extend([freeze_moe_router])
     
-    peft_cfg = LoRA(target_modules=[])
+    if policy_cfg["megatron_cfg"].get("peft", {}).get("enabled", False):
+        lora_cfg = policy_cfg["megatron_cfg"].get("peft", {})
+        peft_cfg = LoRA(
+            target_modules=lora_cfg["target_modules"],
+            dim=lora_cfg["dim"],
+            alpha=lora_cfg["alpha"],
+            dropout=lora_cfg["dropout"],
+            dropout_position=lora_cfg["dropout_position"],
+            lora_A_init_method=lora_cfg["lora_A_init_method"],
+            lora_B_init_method=lora_cfg["lora_B_init_method"],
+            a2a_experimental=lora_cfg["a2a_experimental"],
+            lora_dtype=lora_cfg["lora_dtype"])
+    else:
+        peft_cfg = None
     cfg.peft = peft_cfg
-    pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
-    cfg.model.register_pre_wrap_hook(pre_peft_hook)
-    def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
-        model = pre_peft_hook(model)
-        return model
-    peft_hook = composed_peft_hook
+
+    if cfg.peft is not None:
+        pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
+        cfg.model.register_pre_wrap_hook(pre_peft_hook)
+        def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
+            model = pre_peft_hook(model)
+            return model
+        peft_hook = composed_peft_hook
+    else:
+        peft_hook = []
 
     # Model, optimizer, and learning rate.
     model = get_model(

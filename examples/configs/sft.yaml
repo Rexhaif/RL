@@ -100,6 +100,19 @@ policy:
     defer_fp32_logits: False
     moe_per_layer_logging: False
 
+    peft:
+      enabled: true
+      target_modules: []
+      dim: 32
+      alpha: 32
+      dropout: 0.0
+      dropout_position: "pre"
+      lora_A_init_method: "xavier"
+      lora_B_init_method: "zero"
+      a2a_experimental: false
+      lora_dtype: None
+
+
     optimizer:
       optimizer: "adam"
       lr: 5.0e-6
