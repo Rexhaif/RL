@@ -292,9 +292,9 @@ def setup_megatron_model(
             lora_dtype=lora_cfg["lora_dtype"])
     else:
         peft_cfg = None
-    cfg.peft = peft_cfg
+    cfg.lora_cfg = peft_cfg
 
-    if cfg.peft is not None:
+    if cfg.lora_cfg is not None:
         pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
         cfg.model.register_pre_wrap_hook(pre_peft_hook)
         def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
