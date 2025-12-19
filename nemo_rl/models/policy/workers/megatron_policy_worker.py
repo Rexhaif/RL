@@ -281,6 +281,7 @@ def setup_megatron_model(
         lora_cfg = policy_cfg["megatron_cfg"].get("lora_cfg", {})
         peft_cfg = LoRA(
             target_modules=lora_cfg["target_modules"],
+            exclude_modules=lora_cfg["exclude_modules"],
             dim=lora_cfg["dim"],
             alpha=lora_cfg["alpha"],
             dropout=lora_cfg["dropout"],
