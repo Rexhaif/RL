@@ -191,7 +191,7 @@ policy:
       use_triton: true          # Use Triton-optimized kernels (DTensor v2 path)
 ```
 
-### Parameter Details
+### DTensor (Automodel) Parameter Details
 - **`enabled`** (bool): Whether to enable LoRA training
 - **`target_modules`** (list): Specific module names to apply LoRA. Empty with `match_all_linear=true` applies to all linear layers
 - **`exclude_modules`** (list): Module names to exclude from LoRA
@@ -230,13 +230,13 @@ policy:
       lora_dtype: None              # Weight's dtype
 ```
 
-### Parameter Details
+### Megatron Parameter Details
 - **`enabled`** (bool): Whether to enable LoRA training
 - **`target_modules`** (list): Specific module names to apply LoRA. Defaults to all linear layers if the list is left empty. Example: ['linear_qkv', 'linear_proj', 'linear_fc1', 'linear_fc2'].
-    - 'linear_qkv': Apply LoRA to the fused linear layer used for query, key, and value projections in self-attention.
-    - 'linear_proj': Apply LoRA to the linear layer used for projecting the output of self-attention.
-    - 'linear_fc1': Apply LoRA to the first fully-connected layer in MLP.
-    - 'linear_fc2': Apply LoRA to the second fully-connected layer in MLP.
+  - 'linear_qkv': Apply LoRA to the fused linear layer used for query, key, and value projections in self-attention.
+  - 'linear_proj': Apply LoRA to the linear layer used for projecting the output of self-attention.
+  - 'linear_fc1': Apply LoRA to the first fully-connected layer in MLP.
+  - 'linear_fc2': Apply LoRA to the second fully-connected layer in MLP.
   Target modules can also contain wildcards. For example, you can specify target_modules=['*.layers.0.*.linear_qkv', '*.layers.1.*.linear_qkv'] to add LoRA to only linear_qkv on the first two layers.
 - **`exclude_modules`** (List[str], optional): A list of module names not to apply LoRa. It will match all nn.Linear & nn.Linear-adjacent modules whose name does not match any string in exclude_modules. If used, will require target_modules to be empty list or None.
 - **`dim`** (int): LoRA rank (r). Lower values = fewer parameters but less capacity. Typical: 4, 8, 16, 32, 64
@@ -247,7 +247,6 @@ policy:
 - **`lora_B_init`** (str): Initialization method for the low-rank matrix B. Defaults to "zero".
 - **`a2a_experimental`** (bool): Enables the experimental All-to-All (A2A) communication strategy. Defaults to False.
 - **`lora_dtype`** (torch.dtype): Weight's dtype, by default will use orig_linear's but if they are quantized weights (e.g. 4bit) needs to be specified explicitly.
-only.
 
 ### Megatron Example Usage
 The config uses DTensor by default, so the megatron backend needs to be explicitly enabled. 
