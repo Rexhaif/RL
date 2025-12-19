@@ -21,10 +21,11 @@ policy:
       dim: 128
       alpha: 128
     optimizer:
-      kwargs:
-        lr: 2.0e-05
-        weight_decay: 0.01
-        eps: 1.0e-08
+      optimizer: "adam"
+      lr: 2.0e-05
+      min_lr: 2.0e-05
+      weight_decay: 0.01 # When weight decay is set, it actually uses AdamW
+      adam_eps: 1.0e-08
   train_global_batch_size: 128
   max_total_sequence_length: 4096
   make_sequence_length_divisible_by: 2
