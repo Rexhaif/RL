@@ -89,7 +89,7 @@ policy:
     
   ## ignored since enabled=false, but needed for testing purposes
   megatron_cfg:
-    enabled: true
+    enabled: false
     env_vars: {}
     empty_unused_memory_level: 1
     activation_checkpointing: false
@@ -114,8 +114,8 @@ policy:
     defer_fp32_logits: False
     moe_per_layer_logging: False
 
-    peft:
-      enabled: true
+    lora_cfg:
+      enabled: false
       target_modules: []
       dim: 32
       alpha: 32

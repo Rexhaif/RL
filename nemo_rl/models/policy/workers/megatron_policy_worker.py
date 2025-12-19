@@ -277,8 +277,8 @@ def setup_megatron_model(
         mixed_precision_wrapper = CustomFloat16Module
         pre_wrap_hook.extend([freeze_moe_router])
     
-    if policy_cfg["megatron_cfg"].get("peft", {}).get("enabled", False):
-        lora_cfg = policy_cfg["megatron_cfg"].get("peft", {})
+    if policy_cfg["megatron_cfg"].get("lora_cfg", {}).get("enabled", False):
+        lora_cfg = policy_cfg["megatron_cfg"].get("lora_cfg", {})
         peft_cfg = LoRA(
             target_modules=lora_cfg["target_modules"],
             dim=lora_cfg["dim"],
@@ -328,7 +328,7 @@ def setup_megatron_model(
 
     print("Model, optimizer, and learning rate scheduler built")
     torch.distributed.barrier()
-    if cfg.peft is not None:
+    if cfg.lora_cfg is not None:
         should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load))
         if should_load_checkpoint:
             # The finetune toggle is explicitly set to True in order to avoid loading optimizer and RNG states
