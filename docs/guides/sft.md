@@ -253,6 +253,7 @@ only.
 The config uses DTensor by default, so the megatron backend needs to be explicitly enabled. 
 ```sh
 uv run examples/run_sft.py \
+  --config examples/configs/sft.yaml \
   policy.dtensor_cfg.enabled=false \
   policy.megatron_cfg.enabled=true \
   policy.megatron_cfg.lora_cfg.enabled=true
