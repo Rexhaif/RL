@@ -175,6 +175,7 @@ Notes:
 
 The LoRA configuration is specified under the `policy.dtensor_cfg.lora_cfg` section:
 
+```yaml
 policy:
   dtensor_cfg:
     lora_cfg:
@@ -188,6 +189,7 @@ policy:
       dropout_position: "post"  # Dropout position: "pre" or "post"
       lora_A_init: "xavier"     # Initialization method: "xavier" or "uniform"
       use_triton: true          # Use Triton-optimized kernels (DTensor v2 path)
+```
 
 ### Parameter Details
 - **`enabled`** (bool): Whether to enable LoRA training
@@ -211,6 +213,7 @@ uv run examples/run_sft.py policy.dtensor_cfg.lora_cfg.enabled=true
 
 The LoRA configuration is specified under the `policy.megatron_cfg.lora_cfg` section:
 
+```yaml
 policy:
   megatron_cfg:
     lora_cfg:
@@ -225,6 +228,7 @@ policy:
       lora_B_init_method: "zero"    # Initialization method for lora B: "zero"
       a2a_experimental: false       # Enables the experimental All-to-All (A2A) communication strategy.
       lora_dtype: None              # Weight's dtype
+```
 
 ### Parameter Details
 - **`enabled`** (bool): Whether to enable LoRA training
