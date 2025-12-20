@@ -41,11 +41,7 @@ def import_model_from_hf_name(
     # TODO(ahmadki): remove block once https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/1694 is merged
     # megatron-bridge has a bug when converting Qwen3-Next models
     # with tensor_model_parallel_size > 1. Force TP=1 during conversion.
-    if (
-        megatron_config is not None
-        and "converter_type" in megatron_config
-        and megatron_config["converter_type"] == "Qwen3NextForCausalLM"
-    ):
+    if megatron_config is not None and "qwen3-next" in hf_model_name.lower():
         original_tp_size = megatron_config.get("tensor_model_parallel_size", 1)
         if original_tp_size > 1:
             print(

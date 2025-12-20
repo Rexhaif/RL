@@ -646,10 +646,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         ######################################################################################################
         # TODO(ahmadki): remove block once https://github.com/NVIDIA-NeMo/Megatron-Bridge/pull/1694 is merged
         # Validation: Qwen3-Next checkpoints must have TP=1 due to megatron-bridge conversion bug
-        if (
-            "converter_type" in self.cfg["megatron_cfg"]
-            and self.cfg["megatron_cfg"]["converter_type"] == "Qwen3NextForCausalLM"
-        ):
+        if "qwen3-next" in self.cfg["model_name"].lower():
             checkpoint_tp_size = model_cfg.tensor_model_parallel_size
             if checkpoint_tp_size != 1:
                 raise ValueError(
