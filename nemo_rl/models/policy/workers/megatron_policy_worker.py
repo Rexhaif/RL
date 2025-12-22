@@ -24,9 +24,6 @@ from typing import Any, Iterator, Optional, TypeVar, cast
 
 import ray
 import torch
-<<<<<<< HEAD
-from megatron.bridge.peft.lora import LoRA
-=======
 
 
 def _get_transformer_engine_file(relative_path: str) -> str:
@@ -119,7 +116,6 @@ def _apply_transformer_engine_patch():
         print(f"Error checking/patching transformer_engine: {e}")
 
 
->>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 from megatron.bridge import AutoBridge
 from megatron.bridge.models.model_provider import get_model
 from megatron.bridge.peft.lora import LoRA
@@ -442,10 +438,6 @@ def setup_megatron_model(
         pre_wrap_hook=peft_hook,
         mixed_precision_wrapper=mixed_precision_wrapper,
     )
-<<<<<<< HEAD
-    
-=======
->>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 
     if load_optimizer:
         optimizer, scheduler = setup_optimizer(
@@ -460,30 +452,21 @@ def setup_megatron_model(
 
     print("Model, optimizer, and learning rate scheduler built")
     torch.distributed.barrier()
-<<<<<<< HEAD
-    if cfg.lora_cfg is not None:
-        should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load))
-=======
     if cfg.peft is not None:
         should_load_checkpoint = cfg.checkpoint.load is not None and checkpoint_exists(
             cfg.checkpoint.load
         )
->>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
         if should_load_checkpoint:
             # The finetune toggle is explicitly set to True in order to avoid loading optimizer and RNG states
             # This is switched off here in order to load these states from the checkpoint
             cfg.checkpoint.finetune = False
     else:
-<<<<<<< HEAD
-        should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load)) or (cfg.checkpoint.pretrained_checkpoint is not None and checkpoint_exists(cfg.checkpoint.pretrained_checkpoint))
-=======
         should_load_checkpoint = (
             cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load)
         ) or (
             cfg.checkpoint.pretrained_checkpoint is not None
             and checkpoint_exists(cfg.checkpoint.pretrained_checkpoint)
         )
->>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 
     if should_load_checkpoint:
         load_checkpoint(
