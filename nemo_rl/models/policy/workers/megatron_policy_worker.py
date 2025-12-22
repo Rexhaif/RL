@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from fcntl import LOCK_READ
 import gc
 import os
 import re
@@ -352,69 +353,24 @@ def setup_megatron_model(
 
     pre_wrap_hook = []
     mixed_precision_wrapper = Float16Module
-    if policy_cfg["megatron_cfg"]["freeze_moe_router"]:
 
-        def freeze_moe_router(megatron_model):
-            if not isinstance(megatron_model, list):
-                megatron_model = [megatron_model]
-            for model_module in megatron_model:
-                # Handle both wrapped (Float16Module) and unwrapped models
-                if isinstance(model_module, Float16Module):
-                    model_module = model_module.module
-                # Handle VLM models
-                if hasattr(model_module, "language_model"):
-                    model_module = model_module.language_model
-                for layer in model_module.decoder.layers:
-                    if hasattr(layer, "mlp") and hasattr(layer.mlp, "router"):
-                        layer.mlp.router.weight.requires_grad = False
-
-        mixed_precision_wrapper = CustomFloat16Module
-        pre_wrap_hook.extend([freeze_moe_router])
-    
-    if policy_cfg["megatron_cfg"].get("lora_cfg", {}).get("enabled", False):
-        lora_cfg = policy_cfg["megatron_cfg"].get("lora_cfg", {})
-        peft_cfg = LoRA(
-            target_modules=lora_cfg["target_modules"],
-            exclude_modules=lora_cfg["exclude_modules"],
-            dim=lora_cfg["dim"],
-            alpha=lora_cfg["alpha"],
-            dropout=lora_cfg["dropout"],
-            dropout_position=lora_cfg["dropout_position"],
-            lora_A_init_method=lora_cfg["lora_A_init_method"],
-            lora_B_init_method=lora_cfg["lora_B_init_method"],
-            a2a_experimental=lora_cfg["a2a_experimental"],
-            lora_dtype=lora_cfg["lora_dtype"])
-    else:
-        peft_cfg = None
-    cfg.lora_cfg = peft_cfg
-
-    if cfg.lora_cfg is not None:
-        pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
-        cfg.model.register_pre_wrap_hook(pre_peft_hook)
-        def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
-            model = pre_peft_hook(model)
-            return model
-        peft_hook = composed_peft_hook
-    else:
-        peft_hook = []
-
-    if policy_cfg["megatron_cfg"].get("lora_cfg", {}).get("enabled", False):
-        lora_cfg = policy_cfg["megatron_cfg"].get("lora_cfg", {})
-        peft_cfg = LoRA(
-            target_modules=lora_cfg["target_modules"],
-            exclude_modules=lora_cfg["exclude_modules"],
-            dim=lora_cfg["dim"],
-            alpha=lora_cfg["alpha"],
-            dropout=lora_cfg["dropout"],
-            dropout_position=lora_cfg["dropout_position"],
-            lora_A_init_method=lora_cfg["lora_A_init_method"],
-            lora_B_init_method=lora_cfg["lora_B_init_method"],
-            a2a_experimental=lora_cfg["a2a_experimental"],
-            lora_dtype=lora_cfg["lora_dtype"],
+    if policy_cfg["megatron_cfg"].get("peft", {}).get("enabled", False):
+        peft_cfg = policy_cfg["megatron_cfg"].get("peft", {})
+        peft = LoRA(
+            target_modules=peft_cfg["target_modules"],
+            exclude_modules=peft_cfg["exclude_modules"],
+            dim=peft_cfg["dim"],
+            alpha=peft_cfg["alpha"],
+            dropout=peft_cfg["dropout"],
+            dropout_position=peft_cfg["dropout_position"],
+            lora_A_init_method=peft_cfg["lora_A_init_method"],
+            lora_B_init_method=peft_cfg["lora_B_init_method"],
+            a2a_experimental=peft_cfg["a2a_experimental"],
+            lora_dtype=peft_cfg["lora_dtype"],
         )
     else:
-        peft_cfg = None
-    cfg.peft = peft_cfg
+        peft = None
+    cfg.peft = peft
 
     if cfg.peft is not None:
         pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
@@ -428,6 +384,8 @@ def setup_megatron_model(
     else:
         peft_hook = []
 
+    pre_wrap_hook.extend(peft_hook)
+
     # Model, optimizer, and learning rate.
     model = get_model(
         cfg.model,
@@ -435,7 +393,7 @@ def setup_megatron_model(
         use_torch_fsdp2=cfg.dist.use_torch_fsdp2,
         overlap_param_gather_with_optimizer_step=cfg.optimizer.overlap_param_gather_with_optimizer_step,
         data_parallel_random_init=cfg.rng.data_parallel_random_init,
-        pre_wrap_hook=peft_hook,
+        pre_wrap_hook=pre_wrap_hook,
         mixed_precision_wrapper=mixed_precision_wrapper,
     )
 

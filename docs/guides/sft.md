@@ -211,12 +211,12 @@ uv run examples/run_sft.py policy.dtensor_cfg.lora_cfg.enabled=true
 
 ### Megatron Configuration Parameters
 
-The LoRA configuration is specified under the `policy.megatron_cfg.lora_cfg` section:
+The LoRA configuration is specified under the `policy.megatron_cfg.peft` section:
 
 ```yaml
 policy:
   megatron_cfg:
-    lora_cfg:
+    peft:
       enabled: false                # Set to True to enable LoRA fine-tuning
       target_modules: []            # List of module names to apply LoRA, defaults to all linear layers
       exclude_modules: []           # List of module names not to apply LoRa.
@@ -255,7 +255,7 @@ uv run examples/run_sft.py \
   --config examples/configs/sft.yaml \
   policy.dtensor_cfg.enabled=false \
   policy.megatron_cfg.enabled=true \
-  policy.megatron_cfg.lora_cfg.enabled=true
+  policy.megatron_cfg.peft.enabled=true
 ```
 
 For more details on LoRA, see [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685).

@@ -114,7 +114,7 @@ policy:
     defer_fp32_logits: False
     moe_per_layer_logging: False
 
-    lora_cfg:
+    peft:
       enabled: false
       target_modules: []
       exclude_modules: []

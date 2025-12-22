@@ -16,7 +16,7 @@ policy:
     enabled: false
   megatron_cfg:
     enabled: true
-    lora_cfg:
+    peft:
       enabled: true
       dim: 128
       alpha: 128
