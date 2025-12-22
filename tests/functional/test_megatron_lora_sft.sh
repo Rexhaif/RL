@@ -32,7 +32,7 @@ uv run coverage run -a --data-file=$PROJECT_ROOT/tests/.coverage --source=$PROJE
     sft.val_period=3 \
     policy.dtensor_cfg.enabled=false \
     policy.megatron_cfg.enabled=true \
-    policy.megatron_cfg.lora_cfg.enabled=true \
+    policy.megatron_cfg.peft.enabled=true \
     policy.megatron_cfg.pipeline_model_parallel_size=1 \
     logger.tensorboard_enabled=true \
     logger.log_dir=$LOG_DIR \

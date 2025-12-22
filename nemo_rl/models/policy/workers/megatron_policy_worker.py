@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from fcntl import LOCK_READ
 import gc
 import os
 import re
@@ -146,7 +145,6 @@ from megatron.bridge.training.optim import setup_optimizer
 from megatron.bridge.training.setup import (
     _create_peft_pre_wrap_hook,
     _update_model_config_funcs,
-    _create_peft_pre_wrap_hook,
 )
 from megatron.bridge.training.state import GlobalState
 from megatron.bridge.training.tokenizers.tokenizer import build_tokenizer
@@ -353,6 +351,25 @@ def setup_megatron_model(
 
     pre_wrap_hook = []
     mixed_precision_wrapper = Float16Module
+
+    if policy_cfg["megatron_cfg"]["freeze_moe_router"]:
+
+        def freeze_moe_router(megatron_model):
+            if not isinstance(megatron_model, list):
+                megatron_model = [megatron_model]
+            for model_module in megatron_model:
+                # Handle both wrapped (Float16Module) and unwrapped models
+                if isinstance(model_module, Float16Module):
+                    model_module = model_module.module
+                # Handle VLM models
+                if hasattr(model_module, "language_model"):
+                    model_module = model_module.language_model
+                for layer in model_module.decoder.layers:
+                    if hasattr(layer, "mlp") and hasattr(layer.mlp, "router"):
+                        layer.mlp.router.weight.requires_grad = False
+
+        mixed_precision_wrapper = CustomFloat16Module
+        pre_wrap_hook.extend([freeze_moe_router])
 
     if policy_cfg["megatron_cfg"].get("peft", {}).get("enabled", False):
         peft_cfg = policy_cfg["megatron_cfg"].get("peft", {})
