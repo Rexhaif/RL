@@ -401,7 +401,7 @@ def setup_megatron_model(
     else:
         peft_hook = []
 
-    pre_wrap_hook.extend(peft_hook)
+    pre_wrap_hook.extend([peft_hook])
 
     # Model, optimizer, and learning rate.
     model = get_model(
