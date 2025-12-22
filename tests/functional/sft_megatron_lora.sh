@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # clean up checkpoint directory on exit
-trap "rm -rf /tmp/lora_sft_checkpoints" EXIT
+trap "rm -rf /tmp/mbridge_lora_sft_checkpoints" EXIT
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd)
 PROJECT_ROOT=$(realpath $SCRIPT_DIR/../..)
@@ -23,19 +23,24 @@ mkdir -p $EXP_DIR $LOG_DIR
 cd $PROJECT_ROOT
 uv run coverage run -a --data-file=$PROJECT_ROOT/tests/.coverage --source=$PROJECT_ROOT/nemo_rl \
     $PROJECT_ROOT/examples/run_sft.py \
+    --config $PROJECT_ROOT/examples/configs/sft.yaml \
     policy.model_name=Qwen/Qwen3-0.6B \
+    policy.tokenizer.name=Qwen/Qwen3-0.6B \
     cluster.gpus_per_node=2 \
     sft.max_num_steps=3 \
     sft.val_batches=1 \
     sft.val_period=3 \
-    policy.dtensor_cfg.lora.enabled=true \
+    policy.dtensor_cfg.enabled=false \
+    policy.megatron_cfg.enabled=true \
+    policy.megatron_cfg.lora_cfg.enabled=true \
+    policy.megatron_cfg.pipeline_model_parallel_size=1 \
     logger.tensorboard_enabled=true \
     logger.log_dir=$LOG_DIR \
     logger.wandb_enabled=false \
     logger.monitor_gpus=true \
     checkpointing.enabled=true \
     checkpointing.save_period=3 \
-    checkpointing.checkpoint_dir=/tmp/lora_sft_checkpoints \
+    checkpointing.checkpoint_dir=/tmp/mbridge_lora_sft_checkpoints \
     "$@" \
     2>&1 | tee $RUN_LOG
 

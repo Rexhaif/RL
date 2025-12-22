@@ -19,13 +19,110 @@ import warnings
 from collections import defaultdict
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from functools import partial
+from importlib.util import find_spec
 from typing import Any, Iterator, Optional, TypeVar, cast
 
 import ray
 import torch
+<<<<<<< HEAD
 from megatron.bridge.peft.lora import LoRA
+=======
+
+
+def _get_transformer_engine_file(relative_path: str) -> str:
+    """Return absolute path to a Transformer Engine file or raise if it cannot be found.
+
+    The relative_path should be a POSIX-style path under the transformer_engine
+    package root, e.g. "pytorch/triton/permutation.py".
+    """
+    spec = find_spec("transformer_engine")
+    if spec is None or not spec.submodule_search_locations:
+        raise RuntimeError(
+            "Transformer Engine package not found while attempting to patch "
+            f"'{relative_path}'. Ensure `transformer-engine` is installed and "
+            "available in this environment."
+        )
+
+    base_dir = next(iter(spec.submodule_search_locations))
+    file_path = os.path.join(base_dir, *relative_path.split("/"))
+
+    if not os.path.exists(file_path):
+        raise RuntimeError(
+            "Failed to locate expected Transformer Engine file to patch. "
+            f"Looked for '{relative_path}' at '{file_path}'. "
+            "This likely indicates an unexpected Transformer Engine installation "
+            "layout or version mismatch."
+        )
+
+    return file_path
+
+
+def _apply_transformer_engine_patch():
+    """Apply patch from https://github.com/NVIDIA/TransformerEngine/pull/2286/files.
+
+    This locates the target file via importlib metadata instead of importing
+    `transformer_engine`, to avoid side effects during initialization. If the
+    permutation module has already been imported, it will be reloaded so that
+    the patched source takes effect.
+    """
+    try:
+        perm_file = _get_transformer_engine_file("pytorch/triton/permutation.py")
+
+        with open(perm_file, "r") as f:
+            content = f.read()
+
+        if "get_int_dtype = triton.constexpr_function(get_int_dtype)" not in content:
+            print(f"Applying Triton fix to {perm_file}...")
+
+            # 1. Replace the usage
+            old_usage = "idtype = core.get_int_dtype(bitwidth=x.dtype.primitive_bitwidth, signed=True)"
+            new_usage = "idtype = get_int_dtype(bitwidth=x.dtype.primitive_bitwidth, signed=True)"
+
+            # 2. Insert the definition before the first @triton.jit
+            jit_anchor = "@triton.jit"
+
+            new_definition = (
+                "\n\n"
+                "get_int_dtype = core.get_int_dtype\n"
+                "get_int_dtype = triton.constexpr_function(get_int_dtype)\n"
+            )
+
+            new_content = None
+            if old_usage in content:
+                temp_content = content.replace(old_usage, new_usage)
+
+                if jit_anchor in temp_content:
+                    new_content = temp_content.replace(
+                        jit_anchor, new_definition + jit_anchor, 1
+                    )
+
+            if new_content:
+                try:
+                    with open(perm_file, "w") as f:
+                        f.write(new_content)
+                    print("Successfully patched transformer_engine permutation.py.")
+                except OSError as e:
+                    print(
+                        f"Could not write patch to transformer_engine (permission denied?): {e}"
+                    )
+
+        # If the permutation module is already imported in this process,
+        # reload it so that the patched source takes effect for subsequent use.
+        import importlib
+        import sys
+
+        perm_module_name = "transformer_engine.pytorch.triton.permutation"
+        if perm_module_name in sys.modules:
+            importlib.reload(sys.modules[perm_module_name])
+
+    except Exception as e:
+        print(f"Error checking/patching transformer_engine: {e}")
+
+
+>>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 from megatron.bridge import AutoBridge
 from megatron.bridge.models.model_provider import get_model
+from megatron.bridge.peft.lora import LoRA
 from megatron.bridge.training import fault_tolerance
 from megatron.bridge.training.checkpointing import (
     checkpoint_exists,
@@ -50,6 +147,7 @@ from megatron.bridge.training.initialize import (
 )
 from megatron.bridge.training.optim import setup_optimizer
 from megatron.bridge.training.setup import (
+    _create_peft_pre_wrap_hook,
     _update_model_config_funcs,
     _create_peft_pre_wrap_hook,
 )
@@ -304,6 +402,36 @@ def setup_megatron_model(
     else:
         peft_hook = []
 
+    if policy_cfg["megatron_cfg"].get("lora_cfg", {}).get("enabled", False):
+        lora_cfg = policy_cfg["megatron_cfg"].get("lora_cfg", {})
+        peft_cfg = LoRA(
+            target_modules=lora_cfg["target_modules"],
+            exclude_modules=lora_cfg["exclude_modules"],
+            dim=lora_cfg["dim"],
+            alpha=lora_cfg["alpha"],
+            dropout=lora_cfg["dropout"],
+            dropout_position=lora_cfg["dropout_position"],
+            lora_A_init_method=lora_cfg["lora_A_init_method"],
+            lora_B_init_method=lora_cfg["lora_B_init_method"],
+            a2a_experimental=lora_cfg["a2a_experimental"],
+            lora_dtype=lora_cfg["lora_dtype"],
+        )
+    else:
+        peft_cfg = None
+    cfg.peft = peft_cfg
+
+    if cfg.peft is not None:
+        pre_peft_hook = _create_peft_pre_wrap_hook(cfg, state)
+        cfg.model.register_pre_wrap_hook(pre_peft_hook)
+
+        def composed_peft_hook(model: list[MegatronModule]) -> list[MegatronModule]:
+            model = pre_peft_hook(model)
+            return model
+
+        peft_hook = composed_peft_hook
+    else:
+        peft_hook = []
+
     # Model, optimizer, and learning rate.
     model = get_model(
         cfg.model,
@@ -314,7 +442,10 @@ def setup_megatron_model(
         pre_wrap_hook=peft_hook,
         mixed_precision_wrapper=mixed_precision_wrapper,
     )
+<<<<<<< HEAD
     
+=======
+>>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 
     if load_optimizer:
         optimizer, scheduler = setup_optimizer(
@@ -329,14 +460,30 @@ def setup_megatron_model(
 
     print("Model, optimizer, and learning rate scheduler built")
     torch.distributed.barrier()
+<<<<<<< HEAD
     if cfg.lora_cfg is not None:
         should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load))
+=======
+    if cfg.peft is not None:
+        should_load_checkpoint = cfg.checkpoint.load is not None and checkpoint_exists(
+            cfg.checkpoint.load
+        )
+>>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
         if should_load_checkpoint:
             # The finetune toggle is explicitly set to True in order to avoid loading optimizer and RNG states
             # This is switched off here in order to load these states from the checkpoint
             cfg.checkpoint.finetune = False
     else:
+<<<<<<< HEAD
         should_load_checkpoint = (cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load)) or (cfg.checkpoint.pretrained_checkpoint is not None and checkpoint_exists(cfg.checkpoint.pretrained_checkpoint))
+=======
+        should_load_checkpoint = (
+            cfg.checkpoint.load is not None and checkpoint_exists(cfg.checkpoint.load)
+        ) or (
+            cfg.checkpoint.pretrained_checkpoint is not None
+            and checkpoint_exists(cfg.checkpoint.pretrained_checkpoint)
+        )
+>>>>>>> 1f25f9aa3f19683cf02d9920baee33b8ee98cf04
 
     if should_load_checkpoint:
         load_checkpoint(
@@ -480,6 +627,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         pre_init_communication_queue: Queue,
         **kwargs: Any,
     ):
+        _apply_transformer_engine_patch()
+
         self.is_generation_colocated = None
         if "generation" in config and config["generation"] is not None:
             self.is_generation_colocated = config["generation"]["colocated"]["enabled"]
@@ -1085,6 +1234,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                         self.cfg["megatron_cfg"],
                         seq_dim_size,
                     )
+                    # if pad_full_seq_to is not None, we need to use it as the sequence length
+                    seq_dim_size = pad_full_seq_to or seq_dim_size
                 else:
                     data_iterator = batch.make_microbatch_iterator(mbs)
                     data_iterator_len = local_gbs // mbs
