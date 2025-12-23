@@ -29,7 +29,6 @@ from nemo_rl.data.datasets import (
     load_response_dataset,
     update_single_dataset_config,
 )
-from nemo_rl.data.interfaces import TaskDataSpec
 from nemo_rl.distributed.virtual_cluster import init_ray
 from nemo_rl.utils.config import load_config, parse_hydra_overrides
 from nemo_rl.utils.logger import get_next_experiment_dir
@@ -58,14 +57,8 @@ def parse_args():
 
 def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig, seed: int):
     print("\n▶ Setting up data...")
-    default_task_spec = TaskDataSpec(
-        task_name="sft_default",
-        prompt_file=data_config["prompt_file"],
-        system_prompt_file=data_config["system_prompt_file"],
-    )
-
     # setup train dataset
-    update_single_dataset_config(data_config["train"], data_config)
+    update_single_dataset_config(data_config["train"], data_config["default"])
     data = load_response_dataset(data_config["train"], seed)
     data_processor = partial(
         data.processor,
@@ -78,7 +71,7 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig, seed: int):
     dataset = AllTaskProcessedDataset(
         data.dataset,
         tokenizer,
-        default_task_spec,
+        None,
         task_data_processors,
         max_seq_length=data_config["max_input_seq_length"],
     )
@@ -95,7 +88,7 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig, seed: int):
 
     # validation dataset from config
     if data_config["validation"] is not None:
-        update_single_dataset_config(data_config["validation"], data_config)
+        update_single_dataset_config(data_config["validation"], data_config["default"])
         val_data = load_response_dataset(data_config["validation"], seed)
         val_data_list.append(val_data.dataset)
         val_data_processor = partial(
@@ -115,13 +108,13 @@ def setup_data(tokenizer: AutoTokenizer, data_config: DataConfig, seed: int):
         val_dataset = AllTaskProcessedDataset(
             merged_val_data,
             tokenizer,
-            default_task_spec,
+            None,
             val_task_data_processors,
             max_seq_length=data_config["max_input_seq_length"],
         )
         print(f"  ✓ Validation dataset loaded with {len(val_dataset)} samples.")
 
-    return dataset, val_dataset, default_task_spec
+    return dataset, val_dataset
 
 
 def main(is_vlm: bool = False):
@@ -159,11 +152,7 @@ def main(is_vlm: bool = False):
     tokenizer = get_tokenizer(config["policy"]["tokenizer"], get_processor=is_vlm)
 
     # setup data
-    (
-        dataset,
-        val_dataset,
-        sft_task_spec,
-    ) = setup_data(tokenizer, config["data"], config["sft"]["seed"])
+    dataset, val_dataset = setup_data(tokenizer, config["data"], config["sft"]["seed"])
 
     (
         policy,
@@ -185,7 +174,6 @@ def main(is_vlm: bool = False):
         loss_fn,
         master_config,
         logger,
-        sft_task_spec,
         checkpointer,
         sft_save_state,
     )
