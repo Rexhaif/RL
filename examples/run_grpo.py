@@ -97,7 +97,9 @@ def setup_data(
         task_to_env[task_name] = envs[cfg["env_name"]]
 
     if data_config["use_multiple_dataloader"]:
-        assert data_config["num_prompts_per_dataloader"] is not None, "num_prompts_per_dataloader must be set when using multiple_dataloader"
+        assert data_config["num_prompts_per_dataloader"] is not None, (
+            "num_prompts_per_dataloader must be set when using multiple_dataloader"
+        )
         datasets = {
             data.task_name: AllTaskProcessedDataset(
                 data.dataset,
@@ -105,7 +107,8 @@ def setup_data(
                 None,
                 task_data_processors,
                 max_seq_length=data_config["max_input_seq_length"],
-            ) for data in data_list
+            )
+            for data in data_list
         }
     else:
         merged_data = concatenate_datasets([data.dataset for data in data_list])
@@ -258,7 +261,9 @@ def main() -> None:
 
         # Async GRPO does not support multiple dataloaders
         if config["data"]["use_multiple_dataloader"]:
-            raise NotImplementedError("use_multiple_dataloader is not supported with async GRPO")
+            raise NotImplementedError(
+                "use_multiple_dataloader is not supported with async GRPO"
+            )
         dataloader = dataloaders["all_tasks"]
 
         from nemo_rl.algorithms.grpo import async_grpo_train

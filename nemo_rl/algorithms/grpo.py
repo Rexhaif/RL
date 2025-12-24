@@ -45,8 +45,8 @@ from nemo_rl.algorithms.utils import (
 )
 from nemo_rl.data import DataConfig
 from nemo_rl.data.collate_fn import rl_collate_fn
-from nemo_rl.data.datasets import AllTaskProcessedDataset
 from nemo_rl.data.dataloader import MultipleDataloaderWrapper
+from nemo_rl.data.datasets import AllTaskProcessedDataset
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.data.llm_message_utils import (
     batched_message_log_to_flat_message,
@@ -262,7 +262,7 @@ def setup(
         dataloader_batch_size = int(dataloader_batch_size * batch_multiplier)
 
     # Load train dataset
-    dataloaders : dict[str, StatefulDataLoader] = {}
+    dataloaders: dict[str, StatefulDataLoader] = {}
     for task_name, dataset in datasets.items():
         dataloaders[task_name] = StatefulDataLoader(
             dataset,
@@ -1072,10 +1072,12 @@ def grpo_train(
 
     # Set dataloader
     if master_config["data"]["use_multiple_dataloader"]:
+        num_prompts_per_step = master_config["grpo"]["num_prompts_per_step"]
+        batch_multiplier = master_config["grpo"]["batch_multiplier"]
         dataloader = MultipleDataloaderWrapper(
-            master_config["grpo"]["num_prompts_per_step"],
-            master_config["data"],
-            dataloaders,
+            expected_num_prompts=num_prompts_per_step * batch_multiplier,
+            data_config=master_config["data"],
+            dataloaders=dataloaders,
         )
     else:
         dataloader = dataloaders["all_tasks"]
@@ -1090,9 +1092,15 @@ def grpo_train(
         # Run grpo/dapo training loop (single-turn)
         for batch in dataloader:
             if master_config["data"]["use_multiple_dataloader"]:
-                print(f"\n{'=' * 25} Step {current_step + 1}/{max_num_steps} {'=' * 25}", flush=True)
+                print(
+                    f"\n{'=' * 25} Step {current_step + 1}/{max_num_steps} {'=' * 25}",
+                    flush=True,
+                )
             else:
-                print(f"\n{'=' * 25} Step {current_step + 1}/{min(len(dataloader), max_num_steps)} {'=' * 25}", flush=True)
+                print(
+                    f"\n{'=' * 25} Step {current_step + 1}/{min(len(dataloader), max_num_steps)} {'=' * 25}",
+                    flush=True,
+                )
 
             maybe_gpu_profile_step(policy, total_steps + 1)
             if policy != policy_generation:
@@ -1385,10 +1393,12 @@ def grpo_train(
                         # Set generation as stale to force refit with new scales
                         POLICY_GENERATION_STALE = True
 
-                is_last_step = (total_steps + 1 >= max_num_steps) or (
-                    (current_epoch + 1 == max_num_epochs)
-                    and (current_step + 1 == len(dataloader))
-                )
+                is_last_step = total_steps + 1 >= max_num_steps
+                if not master_config["data"]["use_multiple_dataloader"]:
+                    is_last_step = is_last_step or (
+                        (current_epoch + 1 == max_num_epochs)
+                        and (current_step + 1 == len(dataloader))
+                    )
 
                 # Run validation if it's a validation step
                 if val_period > 0 and (total_steps + 1) % val_period == 0:
@@ -1565,7 +1575,9 @@ def grpo_train(
                         for task_name, task_dataloader in dataloaders.items():
                             torch.save(
                                 task_dataloader.state_dict(),
-                                os.path.join(checkpoint_path, f"train_dataloader_{task_name}.pt"),
+                                os.path.join(
+                                    checkpoint_path, f"train_dataloader_{task_name}.pt"
+                                ),
                             )
                         checkpointer.finalize_checkpoint(checkpoint_path)
 
