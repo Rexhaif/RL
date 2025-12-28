@@ -48,6 +48,12 @@ ACTOR_ENVIRONMENT_REGISTRY: dict[str, str] = {
 
 
 def get_actor_python_env(actor_class_fqn: str) -> str:
+
+    SHOULD_USE_SYSTEM_EXECUTABLE = os.environ.get("NEMO_RL_PY_EXECUTABLES_SYSTEM", "0") == "1"
+
+    if SHOULD_USE_SYSTEM_EXECUTABLE:
+        return PY_EXECUTABLES.SYSTEM
+
     if actor_class_fqn in ACTOR_ENVIRONMENT_REGISTRY:
         return ACTOR_ENVIRONMENT_REGISTRY[actor_class_fqn]
     else:
