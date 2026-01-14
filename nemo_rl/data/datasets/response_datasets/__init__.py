@@ -105,6 +105,22 @@ def load_response_dataset(data_config, seed: int = 42):
         )
     elif dataset_name == "HelpSteer3":
         base_dataset: Any = HelpSteer3Dataset()
+    elif dataset_name == "MLEMDataset":
+        # Import here to avoid circular import
+        from mlem.training.mlem_dataset import MLEMDataset
+
+        if "train_data_path" not in data_config:
+            raise ValueError(
+                "train_data_path is required for MLEMDataset."
+            )
+        extra_kwargs = get_extra_kwargs(
+            data_config,
+            ["val_data_path", "train_split", "val_split"],
+        )
+        base_dataset = MLEMDataset(
+            train_data_path=data_config["train_data_path"],
+            **extra_kwargs,
+        )
     # fall back to load from JSON file
     elif dataset_name == "ResponseDataset":
         if "train_data_path" not in data_config:
@@ -161,4 +177,5 @@ __all__ = [
     "SquadDataset",
     "Tulu3SftMixtureDataset",
     "HelpSteer3Dataset",
+    "MLEMDataset",
 ]
