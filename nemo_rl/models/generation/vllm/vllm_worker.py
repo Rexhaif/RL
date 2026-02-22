@@ -467,7 +467,7 @@ class BaseVllmGenerationWorker:
             top_p=self.cfg["top_p"],
             top_k=top_k_val,
             max_tokens=max_tokens,
-            logprobs=0,
+            logprobs=0,  # Return top-1 logprob for entropy bonus computation
             stop_token_ids=self.cfg["stop_token_ids"],
             stop=stop_strings,
             include_stop_str_in_output=True,

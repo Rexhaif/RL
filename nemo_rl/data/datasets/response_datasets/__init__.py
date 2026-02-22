@@ -115,7 +115,7 @@ def load_response_dataset(data_config, seed: int = 42):
             )
         extra_kwargs = get_extra_kwargs(
             data_config,
-            ["val_data_path", "train_split", "val_split"],
+            ["val_data_path", "train_split", "val_split", "enable_thinking"],
         )
         base_dataset = MLEMDataset(
             train_data_path=data_config["train_data_path"],

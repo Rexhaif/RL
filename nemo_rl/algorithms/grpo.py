@@ -79,6 +79,7 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # Configuration
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
+SHOULD_SKIP_JSON_LOG = os.getenv("GRPO_SKIP_JSON_LOG", "0") == "1"
 
 
 class RewardScalingConfig(TypedDict):
@@ -1558,9 +1559,11 @@ def grpo_train(
             log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
             log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
             log_data["input_lengths"] = input_lengths.tolist()
-            logger.log_batched_dict_as_jsonl(
-                log_data, f"train_data_step{total_steps + 1}.jsonl"
-            )
+
+            if not SHOULD_SKIP_JSON_LOG:
+                logger.log_batched_dict_as_jsonl(
+                    log_data, f"train_data_step{total_steps + 1}.jsonl"
+                )
 
             timing_metrics: dict[str, float] = timer.get_timing_metrics(
                 reduction_op="sum"
@@ -1776,7 +1779,7 @@ def validate(
         )
 
         val_metrics = {
-            "accuracy": accuracy,
+            "accuracy": accuracy,  # Total reward (includes entropy bonus if enabled)
             "avg_length": avg_length,
             **additional_metrics_to_report,
         }
@@ -1802,7 +1805,10 @@ def validate(
 
     # Print summary of validation results
     print("\n📊 Validation Results:")
-    print(f"    • Accuracy: {accuracy:.4f}")
+    print(f"    • Task Accuracy: {task_accuracy:.4f}")  # Comparable across entropy settings
+    if entropy_bonus_mean > 0:
+        print(f"    • Entropy Bonus: {entropy_bonus_mean:.4f}")
+        print(f"    • Total (task+entropy): {accuracy:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 
@@ -2515,9 +2521,11 @@ def async_grpo_train(
             log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
             log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
             log_data["input_lengths"] = input_lengths.tolist()
-            logger.log_batched_dict_as_jsonl(
-                log_data, f"train_data_step{step + 1}.jsonl"
-            )
+
+            if not SHOULD_SKIP_JSON_LOG:
+                logger.log_batched_dict_as_jsonl(
+                    log_data, f"train_data_step{step + 1}.jsonl"
+                )
 
             timing_metrics: dict[str, float] = timer.get_timing_metrics(
                 reduction_op="sum"
