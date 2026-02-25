@@ -129,6 +129,8 @@ class GenerationConfig(TypedDict):
     colocated: NotRequired[ColocationConfig]
     # This isn't meant to be passed by the user, but is populated by nemo_rl.models.generation.__init__.configure_generation_config
     _pad_token_id: NotRequired[int]
+    # MLEM-specific: Enable guided decoding with predefined MLEM eval output choices
+    use_mlem_guided_decoding: NotRequired[bool]
 
 
 class GenerationDatumSpec(TypedDict):

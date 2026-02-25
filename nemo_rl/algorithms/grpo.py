@@ -1805,10 +1805,7 @@ def validate(
 
     # Print summary of validation results
     print("\n📊 Validation Results:")
-    print(f"    • Task Accuracy: {task_accuracy:.4f}")  # Comparable across entropy settings
-    if entropy_bonus_mean > 0:
-        print(f"    • Entropy Bonus: {entropy_bonus_mean:.4f}")
-        print(f"    • Total (task+entropy): {accuracy:.4f}")
+    print(f"    • Accuract (task+entropy): {accuracy:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 

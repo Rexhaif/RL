@@ -397,6 +397,13 @@ class BaseVllmGenerationWorker:
                 )
             self.cfg["vllm_cfg"]["skip_tokenizer_init"] = False
 
+        # MLEM guided decoding requires tokenizer for structured outputs
+        if self.cfg.get("use_mlem_guided_decoding", False) and self.cfg["vllm_cfg"]["skip_tokenizer_init"]:
+            print(
+                "MLEM guided decoding requires tokenizer initialization. Forcing skip_tokenizer_init=False."
+            )
+            self.cfg["vllm_cfg"]["skip_tokenizer_init"] = False
+
         llm_kwargs = dict(
             model=self.model_name,
             served_model_name=self.model_name,
@@ -462,16 +469,28 @@ class BaseVllmGenerationWorker:
             max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
         )
 
-        return self.SamplingParams(
-            temperature=temperature,
-            top_p=self.cfg["top_p"],
-            top_k=top_k_val,
-            max_tokens=max_tokens,
-            logprobs=0,  # Return top-1 logprob for entropy bonus computation
-            stop_token_ids=self.cfg["stop_token_ids"],
-            stop=stop_strings,
-            include_stop_str_in_output=True,
-        )
+        params_kwargs = {
+            "temperature": temperature,
+            "top_p": self.cfg["top_p"],
+            "top_k": top_k_val,
+            "max_tokens": max_tokens,
+            "logprobs": 0,  # Return top-1 logprob for entropy bonus computation
+            "stop_token_ids": self.cfg["stop_token_ids"],
+            "stop": stop_strings,
+            "include_stop_str_in_output": True,
+        }
+
+        # Add MLEM guided decoding if enabled (constrains outputs to valid eval choices)
+        if self.cfg.get("use_mlem_guided_decoding", False):
+            from mlem.training.output_constraints import UNIVERSAL_EVAL_CHOICES
+            from vllm.sampling_params import StructuredOutputsParams
+
+            # vLLM 0.13+ uses StructuredOutputsParams for guided decoding
+            params_kwargs["structured_outputs"] = StructuredOutputsParams(
+                choice=UNIVERSAL_EVAL_CHOICES
+            )
+
+        return self.SamplingParams(**params_kwargs)
 
     def start_gpu_profiling(self) -> None:
         """Start GPU profiling."""

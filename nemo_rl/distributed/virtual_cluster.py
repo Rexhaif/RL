@@ -162,9 +162,12 @@ def init_ray(log_dir: Optional[str] = None) -> None:
     local_runtime_env = dict(runtime_env)
     local_runtime_env.pop("working_dir", None)
 
+    # Allow disabling dashboard via environment variable (useful for HPC environments)
+    include_dashboard = os.environ.get("RAY_INCLUDE_DASHBOARD", "true").lower() in ("true", "1", "yes")
+
     ray.init(
         log_to_driver=True,
-        include_dashboard=True,
+        include_dashboard=include_dashboard,
         runtime_env=local_runtime_env,
         _temp_dir=os.path.abspath(log_dir) if log_dir else None,
         resources={cvd_tag: 1},

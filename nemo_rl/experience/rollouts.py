@@ -98,13 +98,15 @@ def generate_responses(
         assistant_message = {
             "role": "assistant",
             "content": text,
-            "token_ids": output_ids[i, input_length:total_length],
+            # .clone() to avoid holding reference to large parent tensor
+            "token_ids": output_ids[i, input_length:total_length].clone(),
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
+            # .clone() to avoid holding reference to large parent tensor
             assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
                 i, input_length:total_length
-            ]
+            ].clone()
 
         batch["message_log"][i].append(assistant_message)
 
@@ -193,13 +195,15 @@ async def generate_responses_async(
         assistant_message = {
             "role": "assistant",
             "content": text,
-            "token_ids": output_ids[i, input_length:total_length],
+            # .clone() to avoid holding reference to large parent tensor
+            "token_ids": output_ids[i, input_length:total_length].clone(),
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
+            # .clone() to avoid holding reference to large parent tensor
             assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
                 i, input_length:total_length
-            ]
+            ].clone()
 
         batch["message_log"][i].append(assistant_message)
 

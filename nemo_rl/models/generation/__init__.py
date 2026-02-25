@@ -46,7 +46,8 @@ def configure_generation_config(
         # Respect the skip_tokenizer_init setting from the config. VLMs for example, require this to be False.
         if "skip_tokenizer_init" not in config["vllm_cfg"]:
             # set skip_tokenizer_init
-            if is_eval or config["stop_strings"] is not None:
+            # Structured outputs (guided decoding) requires tokenizer initialization
+            if is_eval or config["stop_strings"] is not None or config.get("use_mlem_guided_decoding", False):
                 config["vllm_cfg"]["skip_tokenizer_init"] = False
             else:
                 config["vllm_cfg"]["skip_tokenizer_init"] = True
