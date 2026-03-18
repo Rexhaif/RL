@@ -679,6 +679,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         batch_specific_stop_strings_list = data.get(
             "stop_strings", [[] for _ in range(batch_size)]
         )
+        batch_extra_env_info = data.get(
+            "extra_env_info", [None for _ in range(batch_size)]
+        )
 
         # Create tasks for each sample in the batch
         async def process_single_sample(sample_idx):
@@ -695,6 +698,21 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             final_stop_strings_for_sample = self._merge_stop_strings(
                 [per_sample_stop_strings] if per_sample_stop_strings else None
             )
+
+            guided_choices = None
+            if self.cfg.get("use_mlem_guided_decoding", False):
+                from mlem.training.output_constraints import get_guided_choices_for_kind
+
+                kind = None
+                if isinstance(batch_extra_env_info, list) and sample_idx < len(
+                    batch_extra_env_info
+                ):
+                    sample_info = batch_extra_env_info[sample_idx]
+                    if isinstance(sample_info, dict):
+                        raw_kind = sample_info.get("kind")
+                        if isinstance(raw_kind, str):
+                            kind = raw_kind
+                guided_choices = get_guided_choices_for_kind(kind)
 
             remaining_ctx = (
                 self.cfg["vllm_cfg"]["max_model_len"] - current_input_actual_length
@@ -742,6 +760,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 greedy=greedy,
                 stop_strings=final_stop_strings_for_sample,
                 max_new_tokens=allowed_new_tokens,
+                guided_choices=guided_choices,
             )
 
             request_id = str(uuid.uuid4())

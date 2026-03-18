@@ -459,6 +459,7 @@ class BaseVllmGenerationWorker:
         greedy: bool,
         stop_strings,
         max_new_tokens: Optional[int] = None,
+        guided_choices: Optional[list[str]] = None,
     ):
         top_k_cfg = self.cfg["top_k"]
         top_k_val = 1 if greedy else (top_k_cfg if top_k_cfg is not None else -1)
@@ -480,14 +481,18 @@ class BaseVllmGenerationWorker:
             "include_stop_str_in_output": True,
         }
 
-        # Add MLEM guided decoding if enabled (constrains outputs to valid eval choices)
+        # Add MLEM guided decoding if enabled.
         if self.cfg.get("use_mlem_guided_decoding", False):
             from mlem.training.output_constraints import UNIVERSAL_EVAL_CHOICES
             from vllm.sampling_params import StructuredOutputsParams
 
-            # vLLM 0.13+ uses StructuredOutputsParams for guided decoding
+            # vLLM 0.13+ uses StructuredOutputsParams for guided decoding.
+            # When guided_choices is provided, it is expected to be task-specific.
+            choices = (
+                guided_choices if guided_choices is not None else UNIVERSAL_EVAL_CHOICES
+            )
             params_kwargs["structured_outputs"] = StructuredOutputsParams(
-                choice=UNIVERSAL_EVAL_CHOICES
+                choice=choices
             )
 
         return self.SamplingParams(**params_kwargs)
@@ -569,10 +574,35 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         input_lengths = data["input_lengths"]
         batch_stop_strings: list[list[str]] = data.get("stop_strings", [])
         stop_strings = self._merge_stop_strings(batch_stop_strings)
-        sampling_params = self._build_sampling_params(
-            greedy=greedy,
-            stop_strings=stop_strings,
-        )
+        sampling_params: Any
+        if self.cfg.get("use_mlem_guided_decoding", False):
+            from mlem.training.output_constraints import get_guided_choices_for_kind
+
+            # Build per-example sampling params so each sample can use the
+            # smallest valid choice set for its task kind.
+            extra_env_info = data.get("extra_env_info", [])
+            per_example_sampling_params = []
+            for i in range(len(input_ids)):
+                kind = None
+                if isinstance(extra_env_info, list) and i < len(extra_env_info):
+                    sample_info = extra_env_info[i]
+                    if isinstance(sample_info, dict):
+                        raw_kind = sample_info.get("kind")
+                        if isinstance(raw_kind, str):
+                            kind = raw_kind
+                per_example_sampling_params.append(
+                    self._build_sampling_params(
+                        greedy=greedy,
+                        stop_strings=stop_strings,
+                        guided_choices=get_guided_choices_for_kind(kind),
+                    )
+                )
+            sampling_params = per_example_sampling_params
+        else:
+            sampling_params = self._build_sampling_params(
+                greedy=greedy,
+                stop_strings=stop_strings,
+            )
 
         # verify inputs have correct padding
         verify_right_padding(data, pad_value=self.cfg["_pad_token_id"])

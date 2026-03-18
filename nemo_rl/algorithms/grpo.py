@@ -163,6 +163,77 @@ def _default_grpo_save_state() -> GRPOSaveState:
     }
 
 
+def _aggregate_extra_env_info_metrics(
+    extra_env_info: list[Any],
+    *,
+    include_task_metrics: bool = True,
+) -> dict[str, float]:
+    """Aggregate scalar metrics emitted per sample by the environment."""
+    valid_items = [item for item in extra_env_info if isinstance(item, dict)]
+    if not valid_items:
+        return {}
+
+    metrics: dict[str, float] = {}
+
+    if include_task_metrics:
+        task_rewards = [
+            float(item["task_reward"])
+            for item in valid_items
+            if "task_reward" in item
+        ]
+        if task_rewards:
+            metrics["task-reward"] = float(np.mean(task_rewards))
+
+        task_correct = [
+            float(bool(item["task_is_correct"]))
+            for item in valid_items
+            if "task_is_correct" in item
+        ]
+        if task_correct:
+            metrics["task-accuracy"] = float(np.mean(task_correct))
+
+    entropy_coeffs = [
+        float(item["entropy_coeff"])
+        for item in valid_items
+        if "entropy_coeff" in item
+    ]
+    if not entropy_coeffs:
+        return metrics
+
+    metrics["entropy_bonus/coeff_mean"] = float(np.mean(entropy_coeffs))
+    metrics["entropy_bonus/coeff_min"] = float(np.min(entropy_coeffs))
+    metrics["entropy_bonus/coeff_max"] = float(np.max(entropy_coeffs))
+    metrics["entropy_bonus/num_tracked"] = float(len(entropy_coeffs))
+
+    entropy_bonuses = [
+        float(item["entropy_bonus"])
+        for item in valid_items
+        if "entropy_bonus" in item
+    ]
+    if entropy_bonuses:
+        metrics["entropy_bonus/scaled_mean"] = float(np.mean(entropy_bonuses))
+
+    coeffs_by_kind: dict[str, list[float]] = {}
+    bonuses_by_kind: dict[str, list[float]] = {}
+    for item in valid_items:
+        kind = item.get("kind")
+        if not isinstance(kind, str) or not kind:
+            continue
+        if "entropy_coeff" in item:
+            coeffs_by_kind.setdefault(kind, []).append(float(item["entropy_coeff"]))
+        if "entropy_bonus" in item:
+            bonuses_by_kind.setdefault(kind, []).append(float(item["entropy_bonus"]))
+
+    for kind, values in sorted(coeffs_by_kind.items()):
+        metrics[f"entropy_bonus/coeff_{kind}"] = float(np.mean(values))
+        metrics[f"entropy_bonus/count_{kind}"] = float(len(values))
+
+    for kind, values in sorted(bonuses_by_kind.items()):
+        metrics[f"entropy_bonus/scaled_mean_{kind}"] = float(np.mean(values))
+
+    return metrics
+
+
 class GRPOLoggerConfig(LoggerConfig):
     num_val_samples_to_print: int  # number of val samples to print to stdout
 
@@ -1461,6 +1532,11 @@ def grpo_train(
                         metrics[k] = np.sum(v).item()
 
                 metrics.update(rollout_metrics)
+                metrics.update(
+                    _aggregate_extra_env_info_metrics(
+                        repeated_batch.get("extra_env_info", [])
+                    )
+                )
                 metrics["vllm_logger_metrics"] = vllm_logger_metrics
                 total_valid_tokens += metrics["global_valid_toks"]
 
@@ -1488,7 +1564,7 @@ def grpo_train(
                     grpo_save_state["current_epoch"] = current_epoch
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
                     if val_metrics is not None:
-                        grpo_save_state["val_reward"] = val_metrics["accuracy"]
+                        grpo_save_state["val_reward"] = val_metrics.get("task-accuracy", val_metrics["accuracy"])
                     elif "val_reward" in grpo_save_state:
                         del grpo_save_state["val_reward"]
                     grpo_save_state["consumed_samples"] = consumed_samples
@@ -1702,7 +1778,10 @@ def validate(
         print(f"▶ Starting validation at step {step}...", flush=True)
 
         total_rewards = []
+        total_task_rewards = []
+        total_task_correct = []
         total_lengths = []
+        all_extra_env_info = []
         all_message_logs = []  # Collect all message logs
 
         max_batches = (
@@ -1754,6 +1833,16 @@ def validate(
                 )
 
             total_rewards.extend(val_batch["total_reward"].tolist())
+            extra_infos = val_batch.get("extra_env_info", [None] * len(val_batch["message_log"]))
+            total_task_rewards.extend(
+                float(item.get("task_reward", 0.0)) if isinstance(item, dict) else 0.0
+                for item in extra_infos
+            )
+            total_task_correct.extend(
+                float(bool(item.get("task_is_correct", False))) if isinstance(item, dict) else 0.0
+                for item in extra_infos
+            )
+            all_extra_env_info.extend(extra_infos)
             total_lengths.append(gen_metrics["mean_gen_tokens_per_sample"])
 
             # Collect message logs for later display
@@ -1771,8 +1860,20 @@ def validate(
         if num_samples > 0:
             rewards_t = torch.tensor(total_rewards, dtype=torch.float32)
             accuracy = rewards_t.mean().item()
+            task_reward = (
+                torch.tensor(total_task_rewards, dtype=torch.float32).mean().item()
+                if total_task_rewards
+                else 0.0
+            )
+            task_accuracy = (
+                torch.tensor(total_task_correct, dtype=torch.float32).mean().item()
+                if total_task_correct
+                else 0.0
+            )
         else:
             accuracy = 0.0
+            task_reward = 0.0
+            task_accuracy = 0.0
 
         avg_length = (
             sum(total_lengths) / len(total_lengths) if len(total_lengths) > 0 else 0.0
@@ -1780,9 +1881,17 @@ def validate(
 
         val_metrics = {
             "accuracy": accuracy,  # Total reward (includes entropy bonus if enabled)
+            "task-accuracy": task_accuracy,
+            "task-reward": task_reward,
             "avg_length": avg_length,
             **additional_metrics_to_report,
         }
+        val_metrics.update(
+            _aggregate_extra_env_info_metrics(
+                all_extra_env_info,
+                include_task_metrics=False,
+            )
+        )
 
         # Print sample conversations only once at the end of validation
         try:
@@ -1805,7 +1914,9 @@ def validate(
 
     # Print summary of validation results
     print("\n📊 Validation Results:")
-    print(f"    • Accuract (task+entropy): {accuracy:.4f}")
+    print(f"    • Accuracy (task+entropy): {accuracy:.4f}")
+    print(f"    • Task accuracy: {task_accuracy:.4f}")
+    print(f"    • Task reward: {task_reward:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 
@@ -2427,6 +2538,11 @@ def async_grpo_train(
                     else:
                         metrics[k] = np.sum(v).item()
                 metrics.update(rollout_metrics)
+                metrics.update(
+                    _aggregate_extra_env_info_metrics(
+                        repeated_batch.get("extra_env_info", [])
+                    )
+                )
                 if vllm_logger_metrics is not None:
                     metrics["vllm_logger_metrics"] = vllm_logger_metrics
                 total_valid_tokens += metrics["global_valid_toks"]
@@ -2451,7 +2567,7 @@ def async_grpo_train(
                     grpo_save_state["current_step"] = step + 1
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
                     if val_metrics is not None:
-                        grpo_save_state["val_reward"] = val_metrics["accuracy"]
+                        grpo_save_state["val_reward"] = val_metrics.get("task-accuracy", val_metrics["accuracy"])
                     elif "val_reward" in grpo_save_state:
                         del grpo_save_state["val_reward"]
                     grpo_save_state["consumed_samples"] = consumed_samples

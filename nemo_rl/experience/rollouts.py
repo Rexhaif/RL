@@ -406,6 +406,11 @@ def run_multi_turn_rollout(
                 "input_ids": active_input_ids,
                 "input_lengths": active_input_lengths,
                 "stop_strings": active_stop_strings,
+                # Forward per-example task metadata so generation backends can
+                # apply kind-specific decoding constraints.
+                "extra_env_info": active_batch.get(
+                    "extra_env_info", [None] * len(active_input_lengths)
+                ),
             }
         )
         # add the multimodal data to the generation input data
@@ -487,6 +492,10 @@ def run_multi_turn_rollout(
             # Increment turn count
             sample_turn_counts[global_idx] += 1
 
+        for i, global_idx in enumerate(active_indices.tolist()):
+            if env_output.metadata[i] is not None:
+                current_batch["extra_env_info"][global_idx] = env_output.metadata[i]
+
         # Determine done samples and update active set
         terminateds = env_output.terminateds.bool()
         done = truncation_mask | terminateds
@@ -549,6 +558,7 @@ async def async_generate_response_for_sample_turn(
     policy_generation: GenerationInterface,
     sample_message_log: list[dict],
     sample_stop_strings: list[str] | None,
+    sample_extra_env_info: Optional[dict[str, Any]],
     tokenizer: TokenizerType,
     max_seq_len: int,
     greedy: bool = False,
@@ -559,6 +569,7 @@ async def async_generate_response_for_sample_turn(
         policy_generation: The generation interface to use
         sample_message_log: Message log for a single sample
         sample_stop_strings: Stop strings for this sample
+        sample_extra_env_info: Environment metadata for this sample (e.g., task kind)
         tokenizer: Tokenizer to use
         max_seq_len: Maximum sequence length
         greedy: Whether to use greedy decoding
@@ -583,6 +594,7 @@ async def async_generate_response_for_sample_turn(
             "input_ids": flat_messages["token_ids"],
             "input_lengths": input_lengths,
             "stop_strings": [sample_stop_strings],
+            "extra_env_info": [sample_extra_env_info],
         }
     )
 
@@ -680,6 +692,7 @@ async def run_sample_multi_turn_rollout(
                 policy_generation,
                 current_message_log,
                 current_stop_strings,
+                current_extra_env_info,
                 tokenizer,
                 max_seq_len,
                 greedy=greedy,
@@ -746,12 +759,13 @@ async def run_sample_multi_turn_rollout(
         env_token_count += len(tokenized_obs)
         token_count += len(tokenized_obs)
 
+        if env_output.metadata[0] is not None:
+            current_extra_env_info = env_output.metadata[0]
+
         # Update sample state for next turn
         if not terminated and not truncated:
             if env_output.next_stop_strings[0] is not None:
                 current_stop_strings = env_output.next_stop_strings[0]
-            if env_output.metadata[0] is not None:
-                current_extra_env_info = env_output.metadata[0]
 
     # Check if max turns reached
     if turn_count >= max_rollout_turns:
