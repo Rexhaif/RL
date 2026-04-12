@@ -35,6 +35,7 @@ from nemo_rl.models.generation.vllm.utils import format_prompt_for_vllm_generati
 from nemo_rl.models.huggingface.common import ModelFlag
 from nemo_rl.models.policy.utils import is_vllm_v1_engine_enabled
 from nemo_rl.utils.nsys import wrap_with_nvtx_name
+from mlem.training.guided_decoding import apply_mlem_structured_outputs_config
 
 
 # Use a base class to share some functions to avoid code duplication.
@@ -426,6 +427,7 @@ class BaseVllmGenerationWorker:
             logprobs_mode="processed_logprobs",
             **vllm_kwargs,
         )
+        llm_kwargs = apply_mlem_structured_outputs_config(llm_kwargs, self.cfg)
 
         self._create_engine(llm_kwargs)
 

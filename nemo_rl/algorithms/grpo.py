@@ -27,6 +27,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from mlem.training.task_metrics import compute_task_metrics_from_metadata
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.algorithms.loss_functions import (
     ClippedPGLossConfig,
@@ -175,7 +176,24 @@ def _aggregate_extra_env_info_metrics(
 
     metrics: dict[str, float] = {}
 
-    if include_task_metrics:
+    has_kinded_task_metrics = any(
+        isinstance(item.get("kind"), str)
+        and ("task_reward" in item or "task_is_correct" in item)
+        for item in valid_items
+    )
+    if has_kinded_task_metrics:
+        derived_task_metrics = compute_task_metrics_from_metadata(valid_items)
+        if include_task_metrics:
+            metrics.update(derived_task_metrics)
+        else:
+            metrics.update(
+                {
+                    k: v
+                    for k, v in derived_task_metrics.items()
+                    if k not in {"task-reward", "task-accuracy"}
+                }
+            )
+    elif include_task_metrics:
         task_rewards = [
             float(item["task_reward"])
             for item in valid_items
@@ -1917,6 +1935,10 @@ def validate(
     print(f"    • Accuracy (task+entropy): {accuracy:.4f}")
     print(f"    • Task accuracy: {task_accuracy:.4f}")
     print(f"    • Task reward: {task_reward:.4f}")
+    if "mt-accuracy" in val_metrics:
+        print(f"    • MT accuracy: {val_metrics['mt-accuracy']:.4f}")
+    if "mt-reward" in val_metrics:
+        print(f"    • MT reward: {val_metrics['mt-reward']:.4f}")
     print(f"    • Average response length: {avg_length:.1f} tokens")
     print(f"    • Samples processed: {len(total_rewards)}", flush=True)
 
@@ -2627,7 +2649,10 @@ def async_grpo_train(
                             os.path.join(checkpoint_path, "train_dataloader.pt"),
                         )
                         checkpointer.finalize_checkpoint(checkpoint_path)
-                    policy.offload_after_refit()
+                    # Non-colocated runs do not need to offload after checkpointing,
+                    # and doing so leaves optimizer state on CPU for the next train step.
+                    if colocated_inference:
+                        policy.offload_after_refit()
 
             log_data = {"content": flat_messages["content"]}
             log_data["rewards"] = rewards.tolist()

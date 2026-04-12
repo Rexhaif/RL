@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, NotRequired, TypedDict, Union
+from typing import Any, Literal, NotRequired, TypedDict, Union
 
 import ray
 import torch
@@ -131,6 +131,11 @@ class GenerationConfig(TypedDict):
     _pad_token_id: NotRequired[int]
     # MLEM-specific: Enable guided decoding with predefined MLEM eval output choices
     use_mlem_guided_decoding: NotRequired[bool]
+    # MLEM-specific: whether guided decoding should constrain the entire response
+    # or only the answer after the reasoning trace ends.
+    mlem_guided_decoding_scope: NotRequired[
+        Literal["full_response", "post_reasoning"]
+    ]
 
 
 class GenerationDatumSpec(TypedDict):

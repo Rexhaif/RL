@@ -46,6 +46,66 @@ from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 # Flag to track if rich logging has been configured
 _rich_logging_configured = False
+_plot_logging_enabled = os.environ.get("NEMO_RL_ENABLE_PLOT_LOGGING", "0") == "1"
+_plot_logging_notice_emitted = False
+
+
+def _warn_plot_logging_disabled_once() -> None:
+    """Emit a single notice when figure/media logging is disabled."""
+
+    global _plot_logging_notice_emitted
+    if _plot_logging_notice_emitted:
+        return
+
+    print(
+        "Plot logging is disabled; skipping figure/media uploads. "
+        "Set NEMO_RL_ENABLE_PLOT_LOGGING=1 to re-enable."
+    )
+    _plot_logging_notice_emitted = True
+
+
+def _normalize_histogram_values(values: Any) -> list[float]:
+    """Flatten nested numeric values into a 1D histogram payload."""
+
+    normalized: list[float] = []
+
+    def _visit(value: Any) -> None:
+        if value is None:
+            return
+
+        if isinstance(value, torch.Tensor):
+            if value.ndim == 0:
+                _visit(value.item())
+            else:
+                for item in value.detach().cpu().reshape(-1).tolist():
+                    _visit(item)
+            return
+
+        if isinstance(value, np.ndarray):
+            if value.ndim == 0:
+                _visit(value.item())
+            else:
+                for item in value.reshape(-1).tolist():
+                    _visit(item)
+            return
+
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                _visit(item)
+            return
+
+        if isinstance(value, (np.floating, np.integer, np.bool_)):
+            value = value.item()
+
+        if isinstance(value, bool):
+            normalized.append(float(value))
+            return
+
+        if isinstance(value, (int, float)) and np.isfinite(value):
+            normalized.append(float(value))
+
+    _visit(values)
+    return normalized
 
 
 class WandbConfig(TypedDict):
@@ -191,6 +251,9 @@ class TensorboardLogger(LoggerInterface):
             plot_data: Dictionary of plot data
             step: Global step value
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
         self.writer.add_figure(name, figure, step)
 
 
@@ -370,6 +433,9 @@ class WandbLogger(LoggerInterface):
             figure: Matplotlib figure to log
             step: Global step value
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
         self.run.log({name: figure}, step=step)
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
@@ -380,7 +446,17 @@ class WandbLogger(LoggerInterface):
             step: Global step value
             name: Name of the metric
         """
-        self.run.log({name: wandb.Histogram(histogram)}, step=step)
+        normalized = _normalize_histogram_values(histogram)
+        if not normalized:
+            print(
+                f"Warning: Skipping histogram '{name}' for wandb logging because it contains no numeric values."
+            )
+            return
+
+        try:
+            self.run.log({name: wandb.Histogram(normalized)}, step=step)
+        except Exception as e:
+            print(f"Warning: Failed to log histogram '{name}' to wandb: {e}")
 
 
 class SwanlabLogger(LoggerInterface):
@@ -436,6 +512,9 @@ class SwanlabLogger(LoggerInterface):
             figure: Matplotlib figure to log
             step: Global step value
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
         self.run.log({name: swanlab.Image(figure)}, step=step)
 
     def log_histogram(self, histogram: list[Any], step: int, name: str) -> None:
@@ -812,6 +891,9 @@ class MLflowLogger(LoggerInterface):
             step: Global step value
             name: Name of the plot
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
         with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp_file:
             figure.savefig(tmp_file.name, format="png", bbox_inches="tight")
             mlflow.log_artifact(tmp_file.name, f"plots/{name}")
@@ -972,6 +1054,10 @@ class Logger(LoggerInterface):
             name: Name of the plot
             timeline_interval: Interval between timeline points (in seconds)
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
+
         if not metrics:
             print(
                 f"Skipping {name} per-worker timeline logging because no metrics were provided."
@@ -1044,7 +1130,12 @@ class Logger(LoggerInterface):
             name: Name of the metric
         """
         for logger in self.loggers:
-            logger.log_histogram(histogram, step, name)
+            try:
+                logger.log_histogram(histogram, step, name)
+            except Exception as e:
+                print(
+                    f"Warning: Failed to log histogram '{name}' via {logger.__class__.__name__}: {e}"
+                )
 
     def log_plot_token_mult_prob_error(
         self, data: dict[str, Any], step: int, name: str
@@ -1059,6 +1150,10 @@ class Logger(LoggerInterface):
             step: Global step value
             name: Name of the plot
         """
+        if not _plot_logging_enabled:
+            _warn_plot_logging_disabled_once()
+            return
+
         # find the sample with the highest log probability error
         token_mask = data["token_mask"][:, 1:]
         sample_mask = data["sample_mask"]

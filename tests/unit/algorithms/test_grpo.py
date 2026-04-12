@@ -20,6 +20,7 @@ import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from nemo_rl.algorithms.grpo import (
+    _aggregate_extra_env_info_metrics,
     _default_grpo_save_state,
     async_grpo_train,
     dynamic_sampling,
@@ -62,6 +63,36 @@ class StubReplayBuffer:
         mock = MagicMock()
         mock.remote = MagicMock(return_value=self._size)  # ray.get will extract this
         return mock
+
+
+def test_aggregate_extra_env_info_metrics_exposes_mt_aliases_for_validation():
+    metrics = _aggregate_extra_env_info_metrics(
+        [
+            {
+                "kind": "wmt-pairwise-ref",
+                "task_reward": 1.0,
+                "task_is_correct": True,
+            },
+            {
+                "kind": "wmt-pairwise-free",
+                "task_reward": 0.0,
+                "task_is_correct": False,
+            },
+            {
+                "kind": "seahorse",
+                "task_reward": 0.5,
+                "task_is_correct": True,
+            },
+        ],
+        include_task_metrics=False,
+    )
+
+    assert "task-reward" not in metrics
+    assert "task-accuracy" not in metrics
+    assert metrics["task-reward_wmt_pairwise"] == pytest.approx(0.5)
+    assert metrics["task-accuracy_wmt_pairwise"] == pytest.approx(0.5)
+    assert metrics["mt-reward"] == pytest.approx(0.5)
+    assert metrics["mt-accuracy"] == pytest.approx(0.5)
 
     @property
     def sample(self):

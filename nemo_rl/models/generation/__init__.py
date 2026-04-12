@@ -16,6 +16,10 @@ from typing import cast
 
 from transformers import PreTrainedTokenizerBase
 
+from mlem.training.guided_decoding import (
+    MLEM_GUIDED_DECODING_SCOPE_POST_REASONING,
+    resolve_mlem_guided_decoding_scope,
+)
 from nemo_rl.models.generation.interfaces import GenerationConfig
 from nemo_rl.models.generation.vllm import VllmConfig
 
@@ -26,6 +30,18 @@ def configure_generation_config(
     config: GenerationConfig, tokenizer: TokenizerType, is_eval=False
 ) -> GenerationConfig:
     """Apply specific configurations to generation config."""
+    scope = resolve_mlem_guided_decoding_scope(config)
+    config["mlem_guided_decoding_scope"] = scope
+
+    if (
+        scope == MLEM_GUIDED_DECODING_SCOPE_POST_REASONING
+        and not config.get("use_mlem_guided_decoding", False)
+    ):
+        raise ValueError(
+            "MLEM post-reasoning guided decoding requires "
+            "use_mlem_guided_decoding=true."
+        )
+
     # tokenizer setting
     if "_pad_token_id" in config:
         warnings.warn(
@@ -51,5 +67,10 @@ def configure_generation_config(
                 config["vllm_cfg"]["skip_tokenizer_init"] = False
             else:
                 config["vllm_cfg"]["skip_tokenizer_init"] = True
+    elif scope == MLEM_GUIDED_DECODING_SCOPE_POST_REASONING:
+        raise ValueError(
+            "MLEM post-reasoning guided decoding is only supported with the vLLM "
+            "generation backend."
+        )
 
     return config
