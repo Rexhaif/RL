@@ -14,6 +14,7 @@
 import gc
 import os
 import re
+import shutil
 import time
 import warnings
 from collections import defaultdict
@@ -556,9 +557,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             hf_model_subdir = f"model_{hf_model_subdir.replace('/', '_')}"
 
         pretrained_path = f"{get_megatron_checkpoint_dir()}/{hf_model_subdir}"
-        pt_checkpoint_exists = os.path.exists(pretrained_path) and os.path.exists(
-            os.path.join(pretrained_path, "iter_0000000")
+        pretrained_run_config = os.path.join(
+            pretrained_path, "iter_0000000", "run_config.yaml"
         )
+        pt_checkpoint_exists = os.path.exists(pretrained_run_config)
 
         # Ensure clean slate before import
         destroy_parallel_state()
@@ -567,6 +569,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         self.rank = get_rank_safe()
         # Need to initialize the process group before calling into Megatron-Bridge, otherwise Megatron-Bridge will try to set an incorrect device
         torch.distributed.init_process_group("nccl")
+        if not pt_checkpoint_exists and os.path.exists(pretrained_path):
+            if self.rank == 0:
+                print(
+                    f"Incomplete imported checkpoint at {pretrained_path}. Removing before retry."
+                )
+                shutil.rmtree(pretrained_path)
+            torch.distributed.barrier()
+            pt_checkpoint_exists = False
         if pt_checkpoint_exists:
             print(f"Checkpoint already exists at {pretrained_path}. Skipping import.")
         else:
@@ -581,10 +591,6 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             if parallel_state.model_parallel_is_initialized():
                 print("Reinitializing model parallel after loading model state.")
                 parallel_state.destroy_model_parallel()
-
-        pretrained_run_config = os.path.join(
-            pretrained_path, "iter_0000000/run_config.yaml"
-        )
 
         self.tokenizer = tokenizer
         if self.tokenizer.pad_token is None:
