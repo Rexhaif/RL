@@ -16,6 +16,7 @@ import asyncio
 import logging
 import multiprocessing
 import os
+import re
 import time
 from typing import Any, Optional
 
@@ -37,6 +38,11 @@ from nemo_rl.models.generation.sglang.utils import AsyncLoopThread
 from nemo_rl.utils.nsys import wrap_with_nvtx_name
 
 logger = logging.getLogger(__name__)
+
+
+def _choices_to_sglang_regex(choices: list[str]) -> str:
+    """Build an exact-choice regex for SGLang structured outputs."""
+    return "(?:" + "|".join(re.escape(choice) for choice in choices) + ")"
 
 
 def _require_sglang():
@@ -218,6 +224,7 @@ class SGLangGenerationWorker:
             "mem_fraction_static",
             "allow_auto_truncate",
             "disable_piecewise_cuda_graph",
+            "reasoning_parser",
         ]:
             if key in self.sglang_cfg:
                 kwargs[key] = self.sglang_cfg[key]
@@ -351,6 +358,7 @@ class SGLangGenerationWorker:
         input_len: Optional[int] = None,
         context_length: Optional[int] = None,
         sample_index: Optional[int] = None,
+        guided_choices: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         """Build sampling parameters dictionary for SGLang API.
 
@@ -400,6 +408,14 @@ class SGLangGenerationWorker:
         stop_token_ids = self.cfg.get("stop_token_ids")
         if stop_token_ids is not None:
             sampling_params["stop_token_ids"] = stop_token_ids
+
+        if self.cfg.get("use_mlem_guided_decoding", False):
+            from mlem.training.output_constraints import UNIVERSAL_EVAL_CHOICES
+
+            choices = (
+                guided_choices if guided_choices is not None else UNIVERSAL_EVAL_CHOICES
+            )
+            sampling_params["regex"] = _choices_to_sglang_regex(choices)
 
         return sampling_params
 
@@ -582,6 +598,7 @@ class SGLangGenerationWorker:
         input_lengths = data["input_lengths"]
         batch_stop_strings = data.get("stop_strings", [None] * len(input_lengths))
         stop_strings = self._merge_stop_strings(batch_stop_strings)
+        batch_extra_env_info = data.get("extra_env_info", [None] * len(input_lengths))
         batch_size = len(input_lengths)
         pad_token_id = self.cfg["_pad_token_id"]
 
@@ -611,6 +628,21 @@ class SGLangGenerationWorker:
 
             valid_input_ids = input_ids[i, :input_len].tolist()
 
+            guided_choices = None
+            if self.cfg.get("use_mlem_guided_decoding", False):
+                from mlem.training.output_constraints import get_guided_choices_for_kind
+
+                kind = None
+                if isinstance(batch_extra_env_info, list) and i < len(
+                    batch_extra_env_info
+                ):
+                    sample_info = batch_extra_env_info[i]
+                    if isinstance(sample_info, dict):
+                        raw_kind = sample_info.get("kind")
+                        if isinstance(raw_kind, str):
+                            kind = raw_kind
+                guided_choices = get_guided_choices_for_kind(kind)
+
             # Build sampling params for this sample (with context_length adjustment)
             sample_sampling_params = self._build_sampling_params(
                 greedy=greedy,
@@ -619,6 +651,7 @@ class SGLangGenerationWorker:
                 input_len=input_len,
                 context_length=context_length,
                 sample_index=i,
+                guided_choices=guided_choices,
             )
 
             tasks.append(

@@ -23,6 +23,7 @@ import ray
 import torch
 from transformers import AutoConfig
 
+from mlem.training.guided_decoding import apply_mlem_structured_outputs_config
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.worker_group_utils import get_nsight_config_if_pattern_matches
 from nemo_rl.models.generation.interfaces import (
@@ -568,6 +569,8 @@ class BaseVllmGenerationWorker:
             **vllm_kwargs,
         )
 
+        llm_kwargs = apply_mlem_structured_outputs_config(llm_kwargs, self.cfg)
+
         self._create_engine(llm_kwargs)
 
         # will be initialized in post_init
@@ -600,6 +603,7 @@ class BaseVllmGenerationWorker:
         greedy: bool,
         stop_strings,
         max_new_tokens: Optional[int] = None,
+        guided_choices: Optional[list[str]] = None,
     ):
         top_k_cfg = self.cfg["top_k"]
         top_k_val = 1 if greedy else (top_k_cfg if top_k_cfg is not None else -1)
@@ -610,16 +614,29 @@ class BaseVllmGenerationWorker:
             max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
         )
 
-        return self.SamplingParams(
-            temperature=temperature,
-            top_p=self.cfg["top_p"],
-            top_k=top_k_val,
-            max_tokens=max_tokens,
-            logprobs=0,
-            stop_token_ids=self.cfg["stop_token_ids"],
-            stop=stop_strings,
-            include_stop_str_in_output=True,
-        )
+        params_kwargs = {
+            "temperature": temperature,
+            "top_p": self.cfg["top_p"],
+            "top_k": top_k_val,
+            "max_tokens": max_tokens,
+            "logprobs": 0,
+            "stop_token_ids": self.cfg["stop_token_ids"],
+            "stop": stop_strings,
+            "include_stop_str_in_output": True,
+        }
+
+        if self.cfg.get("use_mlem_guided_decoding", False):
+            from mlem.training.output_constraints import UNIVERSAL_EVAL_CHOICES
+            from vllm.sampling_params import StructuredOutputsParams
+
+            choices = (
+                guided_choices if guided_choices is not None else UNIVERSAL_EVAL_CHOICES
+            )
+            params_kwargs["structured_outputs"] = StructuredOutputsParams(
+                choice=choices
+            )
+
+        return self.SamplingParams(**params_kwargs)
 
     def start_gpu_profiling(self) -> None:
         """Start GPU profiling."""
@@ -725,10 +742,33 @@ class VllmGenerationWorkerImpl(BaseVllmGenerationWorker):
         input_lengths = data["input_lengths"]
         batch_stop_strings: list[list[str]] = data.get("stop_strings", [])
         stop_strings = self._merge_stop_strings(batch_stop_strings)
-        sampling_params = self._build_sampling_params(
-            greedy=greedy,
-            stop_strings=stop_strings,
-        )
+        sampling_params: Any
+        if self.cfg.get("use_mlem_guided_decoding", False):
+            from mlem.training.output_constraints import get_guided_choices_for_kind
+
+            extra_env_info = data.get("extra_env_info", [])
+            per_example_sampling_params = []
+            for i in range(len(input_ids)):
+                kind = None
+                if isinstance(extra_env_info, list) and i < len(extra_env_info):
+                    sample_info = extra_env_info[i]
+                    if isinstance(sample_info, dict):
+                        raw_kind = sample_info.get("kind")
+                        if isinstance(raw_kind, str):
+                            kind = raw_kind
+                per_example_sampling_params.append(
+                    self._build_sampling_params(
+                        greedy=greedy,
+                        stop_strings=stop_strings,
+                        guided_choices=get_guided_choices_for_kind(kind),
+                    )
+                )
+            sampling_params = per_example_sampling_params
+        else:
+            sampling_params = self._build_sampling_params(
+                greedy=greedy,
+                stop_strings=stop_strings,
+            )
 
         # verify inputs have correct padding
         verify_right_padding(data, pad_value=self.cfg["_pad_token_id"])

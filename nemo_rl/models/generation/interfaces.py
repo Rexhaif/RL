@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 from abc import ABC, abstractmethod
-from typing import Any, NotRequired, TypedDict, Union
+from typing import Any, Literal, NotRequired, TypedDict, Union
 
 import ray
 import torch
@@ -129,6 +129,10 @@ class GenerationConfig(TypedDict):
     colocated: NotRequired[ColocationConfig]
     # This isn't meant to be passed by the user, but is populated by nemo_rl.models.generation.__init__.configure_generation_config
     _pad_token_id: NotRequired[int]
+    use_mlem_guided_decoding: NotRequired[bool]
+    mlem_guided_decoding_scope: NotRequired[
+        Literal["full_response", "post_reasoning"]
+    ]
 
 
 class GenerationDatumSpec(TypedDict):

@@ -93,6 +93,7 @@ class SglangSpecificArgs(TypedDict):
     enable_fast_load: NotRequired[bool]
     # Server warmup
     skip_server_warmup: NotRequired[bool]
+    reasoning_parser: NotRequired[str]
 
 
 class SGLangConfig(GenerationConfig):

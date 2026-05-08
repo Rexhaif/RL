@@ -31,6 +31,7 @@ class ResponseDatasetConfig(TypedDict):
     split_validation_size: NotRequired[float]
     # Seed for train/validation split when split_validation_size > 0
     seed: NotRequired[int]
+    enable_thinking: NotRequired[bool]
 
 
 class PreferenceDatasetConfig(TypedDict):

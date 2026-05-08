@@ -43,6 +43,7 @@ from nemo_rl.data.datasets.response_datasets.refcoco import RefCOCODataset
 from nemo_rl.data.datasets.response_datasets.response_dataset import ResponseDataset
 from nemo_rl.data.datasets.response_datasets.squad import SquadDataset
 from nemo_rl.data.datasets.response_datasets.tulu3 import Tulu3SftMixtureDataset
+from mlem.training.mlem_dataset import MLEMDataset
 
 DATASET_REGISTRY = {
     # built-in datasets
@@ -67,6 +68,7 @@ DATASET_REGISTRY = {
     "openai_format": OpenAIFormatDataset,
     "NemoGymDataset": NemoGymDataset,
     "ResponseDataset": ResponseDataset,
+    "MLEMDataset": MLEMDataset,
 }
 
 
@@ -116,5 +118,6 @@ __all__ = [
     "ResponseDataset",
     "SquadDataset",
     "Tulu3SftMixtureDataset",
+    "MLEMDataset",
     "load_response_dataset",
 ]

@@ -40,7 +40,12 @@ class MemoryTrackerDataPoint(BaseModel):
         ]
 
     def get_snapshot_str(self) -> str:
-        ray_memory_summary = memory_summary(stats_only=True, num_entries=5)
+        try:
+            ray_memory_summary = memory_summary(stats_only=True, num_entries=5)
+        except Exception as exc:
+            ray_memory_summary = (
+                f"<unavailable: {exc.__class__.__name__}: {exc}>"
+            )
         return f"""💭 Driver CPU memory tracker for {self.stage}:
 - Mem usage before                  {self.memory_used_before_stage_gb:>7.2f} GB
 - Mem usage after                   {self.memory_used_after_stage_gb:>7.2f} GB

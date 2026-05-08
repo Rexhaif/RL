@@ -15,6 +15,7 @@
 import hashlib
 import json
 import os
+import shutil
 import time
 import warnings
 from typing import Any, Callable, Optional, TypeVar
@@ -276,8 +277,8 @@ def validate_model_paths(config: PolicyConfig) -> tuple[str, str, bool]:
         overrides_hash = _get_hf_config_overrides_hash(hf_config_overrides)
         hf_model_subdir = f"{hf_model_subdir}__hfovr_{overrides_hash}"
     pretrained_path = os.path.join(get_megatron_checkpoint_dir(), hf_model_subdir)
-    pt_checkpoint_exists = os.path.exists(pretrained_path) and os.path.exists(
-        os.path.join(pretrained_path, "iter_0000000")
+    pt_checkpoint_exists = os.path.exists(
+        os.path.join(pretrained_path, "iter_0000000", "run_config.yaml")
     )
     return hf_model_name, pretrained_path, pt_checkpoint_exists
 
@@ -982,6 +983,20 @@ def handle_model_import(
     force_reconvert_from_hf = config["megatron_cfg"].get(
         "force_reconvert_from_hf", False
     )
+
+    if not pt_checkpoint_exists and os.path.exists(pretrained_path):
+        if torch.distributed.is_initialized():
+            if torch.distributed.get_rank() == 0:
+                print(
+                    f"Incomplete imported checkpoint at {pretrained_path}. Removing before retry."
+                )
+                shutil.rmtree(pretrained_path)
+            torch.distributed.barrier()
+        else:
+            print(
+                f"Incomplete imported checkpoint at {pretrained_path}. Removing before retry."
+            )
+            shutil.rmtree(pretrained_path)
 
     if pt_checkpoint_exists and not force_reconvert_from_hf:
         print(f"Checkpoint already exists at {pretrained_path}. Skipping import.")

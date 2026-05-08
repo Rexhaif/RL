@@ -26,6 +26,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import AutoProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
+from mlem.training.task_metrics import compute_task_metrics_from_metadata
 from nemo_rl.algorithms.advantage_estimator import (
     GDPOAdvantageEstimator,
     GRPOAdvantageEstimator,
@@ -88,6 +89,7 @@ from nemo_rl.utils.venvs import create_local_venv_on_each_node
 # Configuration
 # ===============================================================================
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
+SHOULD_SKIP_JSON_LOG = os.getenv("GRPO_SKIP_JSON_LOG", "0") == "1"
 
 
 class RewardScalingConfig(TypedDict):
@@ -191,6 +193,94 @@ def _default_grpo_save_state() -> GRPOSaveState:
         "total_valid_tokens": 0,
         "val_reward": -99999999.0,
     }
+
+
+def _aggregate_extra_env_info_metrics(
+    extra_env_info: list[Any],
+    *,
+    include_task_metrics: bool = True,
+) -> dict[str, float]:
+    """Aggregate scalar metrics emitted per sample by MLEM environments."""
+    valid_items = [item for item in extra_env_info if isinstance(item, dict)]
+    if not valid_items:
+        return {}
+
+    metrics: dict[str, float] = {}
+
+    has_kinded_task_metrics = any(
+        isinstance(item.get("kind"), str)
+        and ("task_reward" in item or "task_is_correct" in item)
+        for item in valid_items
+    )
+    if has_kinded_task_metrics:
+        derived_task_metrics = compute_task_metrics_from_metadata(valid_items)
+        if include_task_metrics:
+            metrics.update(derived_task_metrics)
+        else:
+            metrics.update(
+                {
+                    k: v
+                    for k, v in derived_task_metrics.items()
+                    if k not in {"task-reward", "task-accuracy"}
+                }
+            )
+    elif include_task_metrics:
+        task_rewards = [
+            float(item["task_reward"])
+            for item in valid_items
+            if "task_reward" in item
+        ]
+        if task_rewards:
+            metrics["task-reward"] = float(np.mean(task_rewards))
+
+        task_correct = [
+            float(bool(item["task_is_correct"]))
+            for item in valid_items
+            if "task_is_correct" in item
+        ]
+        if task_correct:
+            metrics["task-accuracy"] = float(np.mean(task_correct))
+
+    entropy_coeffs = [
+        float(item["entropy_coeff"])
+        for item in valid_items
+        if "entropy_coeff" in item
+    ]
+    if not entropy_coeffs:
+        return metrics
+
+    metrics["entropy_bonus/coeff_mean"] = float(np.mean(entropy_coeffs))
+    metrics["entropy_bonus/coeff_min"] = float(np.min(entropy_coeffs))
+    metrics["entropy_bonus/coeff_max"] = float(np.max(entropy_coeffs))
+    metrics["entropy_bonus/num_tracked"] = float(len(entropy_coeffs))
+
+    entropy_bonuses = [
+        float(item["entropy_bonus"])
+        for item in valid_items
+        if "entropy_bonus" in item
+    ]
+    if entropy_bonuses:
+        metrics["entropy_bonus/scaled_mean"] = float(np.mean(entropy_bonuses))
+
+    coeffs_by_kind: dict[str, list[float]] = {}
+    bonuses_by_kind: dict[str, list[float]] = {}
+    for item in valid_items:
+        kind = item.get("kind")
+        if not isinstance(kind, str) or not kind:
+            continue
+        if "entropy_coeff" in item:
+            coeffs_by_kind.setdefault(kind, []).append(float(item["entropy_coeff"]))
+        if "entropy_bonus" in item:
+            bonuses_by_kind.setdefault(kind, []).append(float(item["entropy_bonus"]))
+
+    for kind, values in sorted(coeffs_by_kind.items()):
+        metrics[f"entropy_bonus/coeff_{kind}"] = float(np.mean(values))
+        metrics[f"entropy_bonus/count_{kind}"] = float(len(values))
+
+    for kind, values in sorted(bonuses_by_kind.items()):
+        metrics[f"entropy_bonus/scaled_mean_{kind}"] = float(np.mean(values))
+
+    return metrics
 
 
 class GRPOLoggerConfig(LoggerConfig):
@@ -1935,6 +2025,11 @@ def grpo_train(
                         print(f"Skipping aggregation for {k} ({type(v)})")
 
                 metrics.update(rollout_metrics)
+                metrics.update(
+                    _aggregate_extra_env_info_metrics(
+                        repeated_batch.get("extra_env_info", [])
+                    )
+                )
                 metrics["generation_logger_metrics"] = generation_logger_metrics
                 total_valid_tokens += metrics["global_valid_toks"]
 
@@ -1968,7 +2063,9 @@ def grpo_train(
                     grpo_save_state["current_epoch"] = current_epoch
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
                     if val_metrics is not None:
-                        grpo_save_state["val_reward"] = val_metrics["accuracy"]
+                        grpo_save_state["val_reward"] = val_metrics.get(
+                            "task-accuracy", val_metrics["accuracy"]
+                        )
                     elif "val_reward" in grpo_save_state:
                         del grpo_save_state["val_reward"]
                     grpo_save_state["consumed_samples"] = consumed_samples
@@ -2046,7 +2143,10 @@ def grpo_train(
             # Logging
             # Log training data
             memory_tracker.snapshot_start_of_stage("Logging", dir())
-            if not _should_log_nemo_gym_responses(master_config):
+            if (
+                not SHOULD_SKIP_JSON_LOG
+                and not _should_log_nemo_gym_responses(master_config)
+            ):
                 log_data = {}
                 if "agent_ref" in repeated_batch:
                     log_data["agent_ref"] = repeated_batch["agent_ref"]
@@ -2232,7 +2332,10 @@ def validate(
         print(f"▶ Starting validation at step {step}...", flush=True)
 
         total_rewards = []
+        total_task_rewards = []
+        total_task_correct = []
         total_lengths = []
+        all_extra_env_info = []
         all_message_logs = []  # Collect all message logs
 
         max_batches = (
@@ -2284,6 +2387,22 @@ def validate(
                 )
 
             total_rewards.extend(val_batch["total_reward"].tolist())
+            extra_infos = val_batch.get(
+                "extra_env_info", [None] * len(val_batch["message_log"])
+            )
+            total_task_rewards.extend(
+                float(item.get("task_reward", 0.0))
+                if isinstance(item, dict)
+                else 0.0
+                for item in extra_infos
+            )
+            total_task_correct.extend(
+                float(bool(item.get("task_is_correct", False)))
+                if isinstance(item, dict)
+                else 0.0
+                for item in extra_infos
+            )
+            all_extra_env_info.extend(extra_infos)
             total_lengths.append(gen_metrics["mean_gen_tokens_per_sample"])
 
             # Collect message logs for later display
@@ -2301,8 +2420,20 @@ def validate(
         if num_samples > 0:
             rewards_t = torch.tensor(total_rewards, dtype=torch.float32)
             accuracy = rewards_t.mean().item()
+            task_reward = (
+                torch.tensor(total_task_rewards, dtype=torch.float32).mean().item()
+                if total_task_rewards
+                else 0.0
+            )
+            task_accuracy = (
+                torch.tensor(total_task_correct, dtype=torch.float32).mean().item()
+                if total_task_correct
+                else 0.0
+            )
         else:
             accuracy = 0.0
+            task_reward = 0.0
+            task_accuracy = 0.0
 
         avg_length = (
             sum(total_lengths) / len(total_lengths) if len(total_lengths) > 0 else 0.0
@@ -2310,9 +2441,17 @@ def validate(
 
         val_metrics = {
             "accuracy": accuracy,
+            "task-accuracy": task_accuracy,
+            "task-reward": task_reward,
             "avg_length": avg_length,
             **additional_metrics_to_report,
         }
+        val_metrics.update(
+            _aggregate_extra_env_info_metrics(
+                all_extra_env_info,
+                include_task_metrics=False,
+            )
+        )
 
         # Print sample conversations only once at the end of validation
         try:
@@ -2989,6 +3128,11 @@ def async_grpo_train(
                     else:
                         metrics[k] = np.sum(v).item()
                 metrics.update(rollout_metrics)
+                metrics.update(
+                    _aggregate_extra_env_info_metrics(
+                        repeated_batch.get("extra_env_info", [])
+                    )
+                )
                 if generation_logger_metrics is not None:
                     metrics["generation_logger_metrics"] = generation_logger_metrics
                 total_valid_tokens += metrics["global_valid_toks"]
@@ -3016,7 +3160,9 @@ def async_grpo_train(
                     grpo_save_state["current_step"] = step + 1
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
                     if val_metrics is not None:
-                        grpo_save_state["val_reward"] = val_metrics["accuracy"]
+                        grpo_save_state["val_reward"] = val_metrics.get(
+                            "task-accuracy", val_metrics["accuracy"]
+                        )
                     elif "val_reward" in grpo_save_state:
                         del grpo_save_state["val_reward"]
                     grpo_save_state["consumed_samples"] = consumed_samples
@@ -3081,25 +3227,28 @@ def async_grpo_train(
 
             # Logging
             # Log training data (match sync GRPO logging payload for parity)
-            log_data = {}
-            if "agent_ref" in repeated_batch:
-                log_data["agent_ref"] = repeated_batch["agent_ref"]
-            log_data["content"] = flat_messages_content
-            log_data["rewards"] = rewards.tolist()
-            if master_config["grpo"]["use_dynamic_sampling"]:
-                # In dynamic sampling, `rewards` corresponds to filtered rewards
-                log_data["filtered_rewards"] = rewards.tolist()
-                log_data["rewards"] = repeated_batch["total_reward"].tolist()
-            log_data["input_lengths"] = input_lengths.tolist()
-            log_data["token_ids"] = train_data["input_ids"].tolist()
-            log_data["token_loss_mask"] = train_data["token_mask"].tolist()
-            log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-            log_data["advantages"] = train_data["advantages"].tolist()
-            log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
-            log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
-            logger.log_batched_dict_as_jsonl(
-                log_data, f"train_data_step{step + 1}.jsonl"
-            )
+            if not SHOULD_SKIP_JSON_LOG:
+                log_data = {}
+                if "agent_ref" in repeated_batch:
+                    log_data["agent_ref"] = repeated_batch["agent_ref"]
+                log_data["content"] = flat_messages_content
+                log_data["rewards"] = rewards.tolist()
+                if master_config["grpo"]["use_dynamic_sampling"]:
+                    # In dynamic sampling, `rewards` corresponds to filtered rewards
+                    log_data["filtered_rewards"] = rewards.tolist()
+                    log_data["rewards"] = repeated_batch["total_reward"].tolist()
+                log_data["input_lengths"] = input_lengths.tolist()
+                log_data["token_ids"] = train_data["input_ids"].tolist()
+                log_data["token_loss_mask"] = train_data["token_mask"].tolist()
+                log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
+                log_data["advantages"] = train_data["advantages"].tolist()
+                log_data["generation_logprobs"] = train_data[
+                    "generation_logprobs"
+                ].tolist()
+                log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
+                logger.log_batched_dict_as_jsonl(
+                    log_data, f"train_data_step{step + 1}.jsonl"
+                )
             del train_data
             del flat_messages_content
 

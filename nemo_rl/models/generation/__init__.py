@@ -16,6 +16,10 @@ from typing import cast
 
 from transformers import PreTrainedTokenizerBase
 
+from mlem.training.guided_decoding import (
+    MLEM_GUIDED_DECODING_SCOPE_POST_REASONING,
+    resolve_mlem_guided_decoding_scope,
+)
 from nemo_rl.models.generation.interfaces import GenerationConfig
 from nemo_rl.models.generation.vllm import VllmConfig
 
@@ -29,6 +33,17 @@ def configure_generation_config(
     has_refit_draft_weights: bool = False,
 ) -> GenerationConfig:
     """Apply specific configurations to generation config."""
+    scope = resolve_mlem_guided_decoding_scope(config)
+    config["mlem_guided_decoding_scope"] = scope
+    if (
+        scope == MLEM_GUIDED_DECODING_SCOPE_POST_REASONING
+        and not config.get("use_mlem_guided_decoding", False)
+    ):
+        raise ValueError(
+            "MLEM post-reasoning guided decoding requires "
+            "use_mlem_guided_decoding=true."
+        )
+
     # tokenizer setting
     if "_pad_token_id" in config:
         warnings.warn(
@@ -64,9 +79,25 @@ def configure_generation_config(
                 is_eval
                 or config["stop_strings"] is not None
                 or config["vllm_cfg"].get("expose_http_server", None)
+                or config.get("use_mlem_guided_decoding", False)
             ):
                 config["vllm_cfg"]["skip_tokenizer_init"] = False
             else:
                 config["vllm_cfg"]["skip_tokenizer_init"] = True
+    elif config["backend"] == "sglang":
+        if scope == MLEM_GUIDED_DECODING_SCOPE_POST_REASONING:
+            sglang_cfg = config.get("sglang_cfg", {})
+            if not isinstance(sglang_cfg, dict) or not sglang_cfg.get(
+                "reasoning_parser"
+            ):
+                raise ValueError(
+                    "MLEM post-reasoning guided decoding with SGLang requires "
+                    "policy.generation.sglang_cfg.reasoning_parser to be set."
+                )
+    elif scope == MLEM_GUIDED_DECODING_SCOPE_POST_REASONING:
+        raise ValueError(
+            "MLEM post-reasoning guided decoding is only supported with the vLLM "
+            "or SGLang generation backends."
+        )
 
     return config

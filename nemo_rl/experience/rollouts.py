@@ -102,13 +102,13 @@ def generate_responses(
         assistant_message = {
             "role": "assistant",
             "content": text,
-            "token_ids": output_ids[i, input_length:total_length],
+            "token_ids": output_ids[i, input_length:total_length].clone(),
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
             assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
                 i, input_length:total_length
-            ]
+            ].clone()
 
         batch["message_log"][i].append(assistant_message)
 
@@ -204,13 +204,13 @@ async def generate_responses_async(
         assistant_message = {
             "role": "assistant",
             "content": text,
-            "token_ids": output_ids[i, input_length:total_length],
+            "token_ids": output_ids[i, input_length:total_length].clone(),
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
             assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
                 i, input_length:total_length
-            ]
+            ].clone()
 
         batch["message_log"][i].append(assistant_message)
 
@@ -427,6 +427,9 @@ def run_multi_turn_rollout(
                 "input_ids": active_input_ids,
                 "input_lengths": active_input_lengths,
                 "stop_strings": active_stop_strings,
+                "extra_env_info": active_batch.get(
+                    "extra_env_info", [None] * len(active_input_lengths)
+                ),
             }
         )
         # add the multimodal data to the generation input data
@@ -602,6 +605,7 @@ async def async_generate_response_for_sample_turn(
     policy_generation: GenerationInterface,
     sample_message_log: list[dict],
     sample_stop_strings: list[str] | None,
+    sample_extra_env_info: Optional[dict[str, Any]],
     tokenizer: TokenizerType,
     max_seq_len: int,
     greedy: bool = False,
@@ -636,6 +640,7 @@ async def async_generate_response_for_sample_turn(
             "input_ids": flat_messages["token_ids"],
             "input_lengths": input_lengths,
             "stop_strings": [sample_stop_strings],
+            "extra_env_info": [sample_extra_env_info],
         }
     )
 
@@ -737,6 +742,7 @@ async def run_sample_multi_turn_rollout(
                 policy_generation,
                 current_message_log,
                 current_stop_strings,
+                current_extra_env_info,
                 tokenizer,
                 max_seq_len,
                 greedy=greedy,
