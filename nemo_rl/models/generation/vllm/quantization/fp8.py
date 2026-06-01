@@ -185,9 +185,9 @@ def init_fp8(vllm_cfg, model_name, model_parallel_size):
         use_fp8_weights=use_fp8_weights,
     )
 
-    if vllm_cfg.get("use_deep_gemm", False):
-        os.environ["VLLM_USE_DEEP_GEMM"] = "1"
-        os.environ["VLLM_USE_DEEP_GEMM_E8M0"] = "0"
+    # DeepGEMM currently rejects some Qwen3.5 FP8 shapes in this environment.
+    os.environ["VLLM_USE_DEEP_GEMM"] = "0"
+    os.environ["VLLM_USE_DEEP_GEMM_E8M0"] = "0"
 
     if vllm_cfg["async_engine"]:
         # for async engine, vllm spawns a process for each DP, so we patch
@@ -297,11 +297,29 @@ def _get_params_in_layers(param_names, layers):
     return params
 
 
+def _normalize_module_path_for_vllm_model(model, module_path: list[str]) -> list[str]:
+    """Map HF checkpoint parameter paths to the corresponding vLLM module path."""
+    if module_path and module_path[0] == "model" and not hasattr(model, "model"):
+        module_path = module_path[1:]
+
+    if (
+        len(module_path) >= 2
+        and module_path[0] == "language_model"
+        and module_path[1] != "model"
+        and hasattr(model, "language_model")
+        and hasattr(model.language_model, "model")
+        and module_path[1] in {"embed_tokens", "layers", "norm"}
+    ):
+        module_path = [module_path[0], "model", *module_path[1:]]
+
+    return module_path
+
+
 def _get_module_from_param_name(model, name: str):
     # Split the name into parts (e.g., 'layers', '0', 'self_attn', 'q_proj', 'weight')
     # The module path is all but the last part (the parameter's own name)
     path_parts = name.split(".")
-    module_path = path_parts[:-1]
+    module_path = _normalize_module_path_for_vllm_model(model, path_parts[:-1])
     # Replace with the fused model name
     packed_modules_mapping = model.packed_modules_mapping
     reversed_mapping = {
@@ -347,13 +365,82 @@ def _is_fp8_weight(name, model):
     return name in fp8_state.fp8_param_names
 
 
+def _expand_shared_qwen35_gdn_scale_for_tp(
+    name: str, scale: torch.Tensor, model
+) -> torch.Tensor:
+    """Match vLLM's TP sharded scale loader for tiny Qwen3.5 GDN projections."""
+    module = _get_module_from_param_name(model, name)
+    tp_size = getattr(module, "tp_size", 1)
+    if tp_size <= 1 or scale.shape[0] != 1:
+        return scale
+
+    return scale.expand(tp_size, *scale.shape[1:]).contiguous()
+
+
+def _coquantize_qwen35_gdn_in_proj_ba(
+    weights: list[tuple[str, torch.Tensor]], model
+) -> dict[str, tuple[torch.Tensor, torch.Tensor | None]]:
+    """Co-quantize Qwen3.5 GDN in_proj_b/a weights that share one scale block.
+
+    vLLM packs `in_proj_b` and `in_proj_a` into `in_proj_ba`. For the small
+    Qwen3.5 GDN projections, both outputs fit into a single 128-row FP8 block,
+    so vLLM stores one shared `weight_scale_inv` row for the fused parameter.
+    Loading a separate scale for the second shard would try to write row 1 of
+    a one-row scale tensor. With vLLM TP>1, the loader also slices the incoming
+    scale by TP rank, so repeat the shared row once per TP rank while preserving
+    the single shared scale value.
+    """
+    block_rows = FP8_BLOCK_QUANT_KWARGS["weight_block_size"][0]
+    by_name = dict(weights)
+    coquantized: dict[str, tuple[torch.Tensor, torch.Tensor | None]] = {}
+
+    for name, first_weight in weights:
+        if not name.endswith(".linear_attn.in_proj_b.weight"):
+            continue
+
+        prefix = name.removesuffix("in_proj_b.weight")
+        second_name = f"{prefix}in_proj_a.weight"
+        second_weight = by_name.get(second_name)
+        if (
+            second_weight is None
+            or first_weight.ndim != 2
+            or second_weight.ndim != 2
+            or first_weight.shape[1] != second_weight.shape[1]
+            or first_weight.shape[0] + second_weight.shape[0] > block_rows
+        ):
+            continue
+
+        fused_weight = torch.cat([first_weight, second_weight], dim=0)
+        fused_lp, fused_scale = cast_tensor_to_fp8_blockwise(
+            fused_weight.to(torch.float),
+            weight_block_size=FP8_BLOCK_QUANT_KWARGS["weight_block_size"],
+        )
+        fused_scale = torch.squeeze(fused_scale, dim=-1)
+        fused_scale = _expand_shared_qwen35_gdn_scale_for_tp(
+            name, fused_scale, model
+        )
+        first_rows = first_weight.shape[0]
+        coquantized[name] = (fused_lp[:first_rows], fused_scale)
+        coquantized[second_name] = (fused_lp[first_rows:], None)
+
+    return coquantized
+
+
 def load_weights(weights, model_runner):
+    weights = list(weights)
     weights_quantized = []
     model = model_runner.model
+    coquantized_shared_blocks = _coquantize_qwen35_gdn_in_proj_ba(weights, model)
 
     for k, v in weights:
         if not _is_fp8_weight(k, model):
             weights_quantized.append((k, v))
+            continue
+        if k in coquantized_shared_blocks:
+            param_lp, param_scale = coquantized_shared_blocks[k]
+            weights_quantized.append([k, param_lp])
+            if param_scale is not None:
+                weights_quantized.append([k + "_scale_inv", param_scale])
             continue
         # Cast the weight into fp8 and its scale factor
         param_lp, param_scale = cast_tensor_to_fp8_blockwise(
@@ -364,7 +451,23 @@ def load_weights(weights, model_runner):
         weights_quantized.append([k, param_lp])
         weights_quantized.append([k + "_scale_inv", param_scale])
     # Finally load the weights into vllm
-    model.load_weights(weights_quantized)
+    current = {"name": None, "shape": None, "dtype": None}
+
+    def traced_weights():
+        for name, tensor in weights_quantized:
+            current["name"] = name
+            current["shape"] = tuple(tensor.shape)
+            current["dtype"] = tensor.dtype
+            yield name, tensor
+
+    try:
+        model.load_weights(traced_weights())
+    except Exception:
+        print(
+            "[nemo-rl fp8] vLLM load_weights failed while loading "
+            f"{current['name']} shape={current['shape']} dtype={current['dtype']}"
+        )
+        raise
 
 
 def cast_tensor_to_fp8_blockwise(

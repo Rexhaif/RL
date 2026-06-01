@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from collections import defaultdict
 from contextlib import nullcontext
 from functools import partial
@@ -440,6 +441,20 @@ class LossPostProcessor:
             return loss * num_microbatches / cp_size, metrics
 
         loss_fn_wrapped = _counteract_mcore_loss_averaging
+        if os.environ.get("NRL_SYNC_BEFORE_BACKWARD", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            loss_fn_before_sync = loss_fn_wrapped
+
+            def _sync_before_backward(*args, **kwargs):
+                loss, metrics = loss_fn_before_sync(*args, **kwargs)
+                if loss.is_cuda:
+                    torch.cuda.synchronize(loss.device)
+                return loss, metrics
+
+            loss_fn_wrapped = _sync_before_backward
 
         return loss_fn_wrapped
 

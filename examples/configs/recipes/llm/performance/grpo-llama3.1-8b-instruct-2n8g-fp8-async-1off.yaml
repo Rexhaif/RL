@@ -10,7 +10,7 @@ policy:
   generation:
     vllm_cfg:
       precision: "fp8"
-      use_deep_gemm: true
+      use_deep_gemm: false
 logger:
   log_dir: logs/grpo-llama3.1-8b-instruct-2n8g-fp8-async-1off
   wandb:

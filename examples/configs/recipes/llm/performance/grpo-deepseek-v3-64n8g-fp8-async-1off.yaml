@@ -15,7 +15,7 @@ policy:
     vllm_cfg:
       tensor_parallel_size: 16
       precision: "fp8"
-      use_deep_gemm: true
+      use_deep_gemm: false
       quantization_ignored_layer_kws: [
         a_proj,
         b_proj

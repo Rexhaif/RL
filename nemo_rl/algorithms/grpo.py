@@ -169,6 +169,9 @@ class GRPOConfig(TypedDict):
     # Sequence-level logprob error masking for training stability. If set, mask sequences with mult_prob_error exceeding this threshold (same scale as token_mult_prob_error metric, e.g., 1.5)
     # Note that this is slightly different than Masked Importance Sampling (MIS) because this uses the absolute value of the difference between the training and generation logprobs, whereas MIS just uses the difference between the training and generation logprobs.
     seq_logprob_error_threshold: float | None
+    # If set, clamp advantages symmetrically before policy training. This keeps
+    # rare high-variance GRPO batches from overflowing FP8/BF16 backward passes.
+    advantage_clip: NotRequired[float | None]
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
     adv_estimator: NotRequired[AdvEstimatorConfig]
 
@@ -1879,6 +1882,19 @@ def grpo_train(
                         logprobs_policy=train_data["prev_logprobs"],
                         logprobs_reference=train_data.get("reference_policy_logprobs"),
                     )
+                    advantage_clip = master_config["grpo"].get("advantage_clip")
+                    if advantage_clip is not None:
+                        advantage_clip = float(advantage_clip)
+                        if advantage_clip <= 0:
+                            raise ValueError("grpo.advantage_clip must be positive")
+                        train_data["advantages"] = train_data["advantages"].clamp(
+                            min=-advantage_clip,
+                            max=advantage_clip,
+                        )
+                        print(
+                            f"  Clipped advantages to [-{advantage_clip:.4f}, {advantage_clip:.4f}]",
+                            flush=True,
+                        )
                     del prompt_ids_for_adv
 
                     # Log rewards and advantages information
@@ -2973,6 +2989,19 @@ def async_grpo_train(
                         logprobs_policy=train_data["prev_logprobs"],
                         logprobs_reference=train_data.get("reference_policy_logprobs"),
                     )
+                    advantage_clip = master_config["grpo"].get("advantage_clip")
+                    if advantage_clip is not None:
+                        advantage_clip = float(advantage_clip)
+                        if advantage_clip <= 0:
+                            raise ValueError("grpo.advantage_clip must be positive")
+                        train_data["advantages"] = train_data["advantages"].clamp(
+                            min=-advantage_clip,
+                            max=advantage_clip,
+                        )
+                        print(
+                            f"  Clipped advantages to [-{advantage_clip:.4f}, {advantage_clip:.4f}]",
+                            flush=True,
+                        )
                     del prompt_ids_for_adv
 
                     # Log advantages stats

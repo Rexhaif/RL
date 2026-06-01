@@ -46,7 +46,7 @@ FP8 generations are recommended to be configured with the following settings:
             vllm_cfg:
                 precision: 'fp8'
                 # DeepGemm is much more performant than vLLM's default cutlass fp8 subchannel scaling kernels
-                use_deep_gemm: true
+                use_deep_gemm: false
                 # Users can specify number of layers to be kept in BF16 precision in their experiments
                 # and by default they are set to 0
                 num_last_layers_in_bf16: 0

@@ -509,6 +509,17 @@ def _apply_performance_config(model_cfg: Any, config: PolicyConfig) -> None:
         except KeyError as e:
             raise KeyError(f"Missing key in fp8_cfg: {e}")
 
+        if "first_last_layers_bf16" in fp8_cfg:
+            model_cfg.first_last_layers_bf16 = fp8_cfg["first_last_layers_bf16"]
+        if "num_layers_at_start_in_bf16" in fp8_cfg:
+            model_cfg.num_layers_at_start_in_bf16 = fp8_cfg[
+                "num_layers_at_start_in_bf16"
+            ]
+        if "num_layers_at_end_in_bf16" in fp8_cfg:
+            model_cfg.num_layers_at_end_in_bf16 = fp8_cfg[
+                "num_layers_at_end_in_bf16"
+            ]
+
         if model_cfg.fp8_param:
             warnings.warn(
                 "Setting fp8_param=True sometimes causes NaN token_mult_prob_error, please use with caution. "
@@ -626,6 +637,7 @@ def _create_megatron_config(
     dtype: torch.dtype,
 ) -> ConfigContainer:
     """Create the final Megatron configuration container."""
+    tokenizer_model = config.get("tokenizer", {}).get("name") or hf_model_name
     return ConfigContainer(
         model=model_cfg,
         checkpoint=checkpoint_config,
@@ -661,7 +673,7 @@ def _create_megatron_config(
         dataset=None,
         tokenizer=TokenizerConfig(
             tokenizer_type="HuggingFaceTokenizer",
-            tokenizer_model=hf_model_name,
+            tokenizer_model=tokenizer_model,
         ),
     )
 
@@ -1162,6 +1174,7 @@ def finalize_megatron_setup(
     Returns:
         Tuple of (megatron_tokenizer, megatron_bridge, should_disable_forward_pre_hook, dp_size)
     """
+    tokenizer_model = config.get("tokenizer", {}).get("name") or hf_model_name
     _update_model_config_funcs(
         [model],
         megatron_cfg.model,
@@ -1173,7 +1186,7 @@ def finalize_megatron_setup(
 
     tokenizer_config = TokenizerConfig(
         tokenizer_type="HuggingFaceTokenizer",
-        tokenizer_model=hf_model_name,
+        tokenizer_model=tokenizer_model,
         hf_tokenizer_kwargs={
             "trust_remote_code": True,
             "use_fast": True,

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from typing import Any, NotRequired, Optional, TypedDict, TypeVar
 
 import torch
@@ -22,6 +23,43 @@ from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.model_utils import DistributedCrossEntropy
 
 Tensor = TypeVar("Tensor", bound=torch.Tensor)
+
+
+def _loss_debug_enabled() -> bool:
+    return os.environ.get("NRL_GRPO_LOSS_DEBUG", "").lower() in {"1", "true", "yes"}
+
+
+def _tensor_debug_stats(name: str, tensor: torch.Tensor, mask: torch.Tensor | None = None) -> str:
+    with torch.no_grad():
+        value = tensor.detach()
+        if mask is not None:
+            mask_bool = mask.detach().bool()
+            if mask_bool.shape != value.shape:
+                try:
+                    mask_bool = torch.broadcast_to(mask_bool, value.shape)
+                except RuntimeError:
+                    mask_bool = None
+            if mask_bool is not None:
+                value = value[mask_bool]
+        count = value.numel()
+        if count == 0:
+            return f"{name}: shape={tuple(tensor.shape)} count=0"
+        finite = torch.isfinite(value)
+        finite_count = finite.sum().item()
+        nan_count = torch.isnan(value).sum().item()
+        inf_count = torch.isinf(value).sum().item()
+        if finite_count:
+            finite_value = value[finite].float()
+            min_value = finite_value.min().item()
+            max_value = finite_value.max().item()
+            mean_value = finite_value.mean().item()
+        else:
+            min_value = max_value = mean_value = None
+        return (
+            f"{name}: shape={tuple(tensor.shape)} count={count} "
+            f"finite={finite_count} nan={nan_count} inf={inf_count} "
+            f"min={min_value} max={max_value} mean={mean_value}"
+        )
 
 
 class DraftCrossEntropyLossConfig(TypedDict):
@@ -572,6 +610,48 @@ class ClippedPGLossFn(LossFunction):
             )
 
         loss = actor_loss + kl
+        if _loss_debug_enabled():
+            try:
+                rank = (
+                    torch.distributed.get_rank()
+                    if torch.distributed.is_available()
+                    and torch.distributed.is_initialized()
+                    else "na"
+                )
+            except RuntimeError:
+                rank = "na"
+            debug_lines = [
+                f"[NRL_GRPO_LOSS_DEBUG] rank={rank}",
+                _tensor_debug_stats("curr_logprobs", curr_logprobs, mask),
+                _tensor_debug_stats("prev_logprobs", prev_logprobs, mask),
+                _tensor_debug_stats("generation_logprobs", generation_logprobs, mask),
+                _tensor_debug_stats("advantages", advantages, mask),
+                _tensor_debug_stats("token_mask", token_mask),
+                _tensor_debug_stats("sample_mask", sample_mask),
+                _tensor_debug_stats("ratios", ratios, mask),
+                _tensor_debug_stats("ratios_clamped", ratios_clamped, mask),
+                _tensor_debug_stats("actor_importance_weights", actor_importance_weights, mask),
+                _tensor_debug_stats("clip_loss", clip_loss, mask),
+                _tensor_debug_stats("actor_loss", actor_loss),
+                _tensor_debug_stats("kl", kl),
+                _tensor_debug_stats("loss", loss),
+            ]
+            if self.reference_policy_kl_penalty != 0:
+                debug_lines.extend(
+                    [
+                        _tensor_debug_stats(
+                            "reference_policy_logprobs",
+                            reference_policy_logprobs,
+                            mask,
+                        ),
+                        _tensor_debug_stats(
+                            "curr_logprobs_unfiltered",
+                            curr_logprobs_unfiltered,
+                            mask,
+                        ),
+                    ]
+                )
+            print("\n".join(debug_lines), flush=True)
         with torch.no_grad():
             probs_ratio = masked_mean(
                 ratios.detach(),

@@ -344,25 +344,32 @@ class MegatronPolicyWorkerImpl(AbstractPolicyWorker, ColocatablePolicyInterface)
 
                     # Forward pass.
                     draft_enabled = "draft" in self.cfg and self.cfg["draft"]["enabled"]
-                    losses_reduced = megatron_forward_backward(
-                        model=self.model,
-                        data_iterator=data_iterator,
-                        num_microbatches=num_microbatches,
-                        seq_length=padded_seq_length,
-                        mbs=micro_batch_size,
-                        post_processing_fn=loss_post_processor,
-                        forward_only=eval_mode,
-                        defer_fp32_logits=self.defer_fp32_logits,
-                        global_valid_seqs=global_valid_seqs,
-                        global_valid_toks=global_valid_toks,
-                        sampling_params=self.sampling_params,
-                        straggler_timer=self.mcore_state.straggler_timer,
-                        draft_model=self.draft_model,
-                        enable_hidden_capture=draft_enabled,
-                        use_linear_ce_fusion_loss=self.cfg["megatron_cfg"].get(
-                            "use_linear_ce_fusion_loss", False
-                        ),
+                    anomaly_ctx = (
+                        torch.autograd.detect_anomaly(check_nan=True)
+                        if os.environ.get("NRL_TORCH_DETECT_ANOMALY", "").lower()
+                        in {"1", "true", "yes"}
+                        else nullcontext()
                     )
+                    with anomaly_ctx:
+                        losses_reduced = megatron_forward_backward(
+                            model=self.model,
+                            data_iterator=data_iterator,
+                            num_microbatches=num_microbatches,
+                            seq_length=padded_seq_length,
+                            mbs=micro_batch_size,
+                            post_processing_fn=loss_post_processor,
+                            forward_only=eval_mode,
+                            defer_fp32_logits=self.defer_fp32_logits,
+                            global_valid_seqs=global_valid_seqs,
+                            global_valid_toks=global_valid_toks,
+                            sampling_params=self.sampling_params,
+                            straggler_timer=self.mcore_state.straggler_timer,
+                            draft_model=self.draft_model,
+                            enable_hidden_capture=draft_enabled,
+                            use_linear_ce_fusion_loss=self.cfg["megatron_cfg"].get(
+                                "use_linear_ce_fusion_loss", False
+                            ),
+                        )
 
                 # Empty unused memory.
                 if self.cfg["megatron_cfg"]["empty_unused_memory_level"] >= 1:
@@ -1047,6 +1054,10 @@ class MegatronPolicyWorkerImpl(AbstractPolicyWorker, ColocatablePolicyInterface)
 
         # Yield the original parameters first.
         for name, tensor in base_iter:
+            # vLLM's Qwen3.5 runtime does not expose an MTP module for refit,
+            # and its Qwen3.5 loader skips mtp.* weights during normal load.
+            if name.startswith("mtp."):
+                continue
             yield name, tensor
 
         if self.draft_model is not None:

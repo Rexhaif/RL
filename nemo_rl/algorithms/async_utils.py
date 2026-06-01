@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import threading as _threading
+import os
 import time
 from typing import Any, Optional
 
@@ -280,10 +281,22 @@ class AsyncTrajectoryCollector:
 
         # Limit in-flight generator requests to num_prompts_per_step * max_trajectory_age_steps
         # This value limits the parallelism of the generation requests.
-        max_inflight = (
+        default_max_inflight = (
             int(self.master_config["grpo"]["num_prompts_per_step"])
             * int(self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"])
         ) or 1
+        max_inflight = int(
+            os.environ.get(
+                "NRL_ASYNC_COLLECTOR_MAX_INFLIGHT_PROMPT_GROUPS",
+                str(default_max_inflight),
+            )
+        )
+        max_inflight = max(1, max_inflight)
+        if max_inflight != default_max_inflight:
+            print(
+                "🔧 Async trajectory collector max in-flight prompt groups "
+                f"overridden: {max_inflight} (default {default_max_inflight})"
+            )
         self._inflight_sema = _threading.Semaphore(max_inflight)
 
         # Simple lock to prevent race conditions when checking/spawning workers

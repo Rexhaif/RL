@@ -14,6 +14,7 @@
 
 import asyncio
 import os
+import threading
 import warnings
 from collections import defaultdict
 from typing import (
@@ -206,11 +207,21 @@ class VllmGeneration(GenerationInterface):
 
         # Used to track the round-robin selection of worker groups for generate_async
         self.current_generate_dp_shard_idx = 0
+        self._generate_dp_shard_lock = threading.Lock()
 
         # Save the device uuids for the workers
         self.device_uuids = self._report_device_id()
 
         self._step_metrics_snapshot: dict[str | tuple[str, int], float] | None = None
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_generate_dp_shard_lock", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._generate_dp_shard_lock = threading.Lock()
 
     def _get_tied_worker_bundle_indices(
         self, cluster: RayVirtualCluster
@@ -596,10 +607,18 @@ class VllmGeneration(GenerationInterface):
             f"outside this method."
         )
 
-        # Determine the leader worker for the current data parallel shard
-        leader_worker_idx = self.worker_group.get_dp_leader_worker_idx(
-            self.current_generate_dp_shard_idx
-        )
+        # Determine the leader worker for the current data parallel shard. Async
+        # GRPO can call generation from many prompt-group threads at once, so
+        # guard the shared round-robin counter.
+        with self._generate_dp_shard_lock:
+            leader_worker_idx = self.worker_group.get_dp_leader_worker_idx(
+                self.current_generate_dp_shard_idx
+            )
+
+            # Increment the round-robin worker group index
+            self.current_generate_dp_shard_idx = (
+                self.current_generate_dp_shard_idx + 1
+            ) % self.worker_group.dp_size
 
         # Run the async method on the selected leader worker
         worker_gen_proxy = self.worker_group.run_single_worker_single_data(
@@ -608,11 +627,6 @@ class VllmGeneration(GenerationInterface):
             data=data,
             greedy=greedy,
         )
-
-        # Increment the round-robin worker group index
-        self.current_generate_dp_shard_idx = (
-            self.current_generate_dp_shard_idx + 1
-        ) % self.worker_group.dp_size
 
         timeout_seconds = float(
             os.environ.get("NRL_VLLM_ASYNC_TIMEOUT_SECONDS", "900")

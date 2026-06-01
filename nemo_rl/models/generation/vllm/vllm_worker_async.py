@@ -15,6 +15,7 @@
 import asyncio
 import copy
 import gc
+import os
 import threading
 import time
 import uuid
@@ -816,10 +817,37 @@ class VllmAsyncGenerationWorkerImpl(BaseVllmGenerationWorker):
                 request_id=request_id,
             )
 
-            # Get the final result from the generator
-            final_request_output = None
-            async for req_output in vllm_request_generator:
-                final_request_output = req_output
+            # Get the final result from the generator. Some hybrid Qwen3.5/GDN
+            # requests can stop yielding without surfacing an exception from
+            # vLLM, so bound the whole request and abort it on timeout.
+            request_timeout_seconds = float(
+                os.environ.get(
+                    "NRL_VLLM_REQUEST_TIMEOUT_SECONDS",
+                    os.environ.get("NRL_VLLM_ASYNC_TIMEOUT_SECONDS", "900"),
+                )
+            )
+
+            async def collect_final_request_output():
+                final_output = None
+                async for req_output in vllm_request_generator:
+                    final_output = req_output
+                return final_output
+
+            try:
+                final_request_output = await asyncio.wait_for(
+                    collect_final_request_output(), timeout=request_timeout_seconds
+                )
+            except asyncio.TimeoutError as exc:
+                try:
+                    await self.llm.abort(request_id)
+                except Exception as abort_exc:
+                    warnings.warn(
+                        f"Failed to abort timed-out vLLM request {request_id}: {abort_exc}"
+                    )
+                raise RuntimeError(
+                    f"Timeout waiting for vLLM request {request_id} after "
+                    f"{request_timeout_seconds}s"
+                ) from exc
 
             if final_request_output is None:
                 raise RuntimeError(f"No output received for request {request_id}")

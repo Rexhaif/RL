@@ -16,6 +16,7 @@ from typing import Any, Optional, Union, cast
 
 import torch
 from datasets import Dataset
+from jinja2.exceptions import TemplateError
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from nemo_rl.data.interfaces import (
@@ -526,9 +527,24 @@ def get_formatted_message_log(
         if tools is not None:
             template_kwargs["tools"] = tools
 
-        formatted_message: str = tokenizer.apply_chat_template(  # type: ignore
-            message_log_strs[: i + 1], **template_kwargs
-        )
+        try:
+            formatted_message: str = tokenizer.apply_chat_template(  # type: ignore
+                message_log_strs[: i + 1], **template_kwargs
+            )
+        except TemplateError as e:
+            if (
+                "No user query found in messages." in str(e)
+                and not any(
+                    prefix_msg["role"] == "user"
+                    for prefix_msg in message_log_strs[: i + 1]
+                )
+            ):
+                # Some templates, including Qwen3.5, require a user turn before
+                # they can render a conversation. Keep leading system/tool
+                # prefixes as context by folding them into the first renderable
+                # non-assistant chunk.
+                continue
+            raise
 
         ## get the length of the previous message, excluding the eos token (if present)
         prev_message_len_no_eos: int = get_first_index_that_differs(

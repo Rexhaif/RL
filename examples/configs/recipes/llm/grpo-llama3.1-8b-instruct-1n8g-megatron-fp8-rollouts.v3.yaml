@@ -34,7 +34,7 @@ policy:
     vllm_cfg:
       precision: fp8
       max_model_len: 4096
-      use_deep_gemm: true
+      use_deep_gemm: false
 data:
   max_input_seq_length: 4096
 logger:
